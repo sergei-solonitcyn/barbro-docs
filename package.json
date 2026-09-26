@@ -1,0 +1,16 @@
+{
+  "devDependencies": {
+    "@cspell/dict-uk-ua": "^4.0.6",
+    "cspell": "^10.3.4",
+    "markdownlint-cli2": "^0.23.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "private": true,
+  "scripts": {
+    "lint:cspell": "cspell .",
+    "lint:md": "markdownlint-cli2",
+    "lint:md:fix": "markdownlint-cli2 --fix"
+  }
+}

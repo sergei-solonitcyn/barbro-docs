@@ -10,9 +10,12 @@
   "dictionaries": [
     "ukrainian-dict"
   ],
+  "import": [
+    "@cspell/dict-uk-ua/cspell-ext.json"
+  ],
   "words": [
     "Barbro", "BarbroDocs",
-    "Citrusy", "crowdsourced",
+    "Citrusy", "creativecommons", "crowdsourced",
     "deepl", "Difford's", "DMARC",
     "Falkenstein",
     "genai",
@@ -21,10 +24,8 @@
     "Netcup",
     "Passwordless", "PKCE",
     "rasmusab",
-    "Scaleway", "Supabase",
+    "Scaleway", "sublicensable", "Supabase",
     "teijo",
-    "дошка",
-    "сирна",
-    "змішайте"
+    "waivable"
   ]
 }
