@@ -1,0 +1,30 @@
+{
+  "version": "0.2",
+  "language": "en,uk",
+  "dictionaryDefinitions": [
+    {
+      "name": "ukrainian-dict",
+      "path": "./node_modules/@cspell/dict-uk-ua/cspell-ext.json"
+    }
+  ],
+  "dictionaries": [
+    "ukrainian-dict"
+  ],
+  "words": [
+    "Barbro", "BarbroDocs",
+    "Citrusy", "crowdsourced",
+    "deepl", "Difford's", "DMARC",
+    "Falkenstein",
+    "genai",
+    "Herbacious", "HTMX", "HSTS",
+    "Litestream", "litestream",
+    "Netcup",
+    "Passwordless", "PKCE",
+    "rasmusab",
+    "Scaleway", "Supabase",
+    "teijo",
+    "дошка",
+    "сирна",
+    "змішайте"
+  ]
+}
