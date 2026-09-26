@@ -7,16 +7,17 @@ updates:
       interval: "weekly"
     commit-message:
       include: "scope"
-      prefix: "ci(deps):"
+      prefix: "ci"
   - package-ecosystem: "npm"
     groups:
       "npm":
         patterns:
           - "markdownlint-cli2"
           - "cspell"
+          - "cspell/dict-uk-ua"
     directory: "/"
     schedule:
       interval: "weekly"
     commit-message:
       include: "scope"
-      prefix: "chore(deps):"
+      prefix: "chore"
