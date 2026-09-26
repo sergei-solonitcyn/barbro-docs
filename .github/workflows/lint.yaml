@@ -38,4 +38,4 @@ jobs:
       - name: Install cspell
         run: npm ci cspell
       - name: Run cspell
-        run: npm run cspell:fix
+        run: npm run lint:cspell
