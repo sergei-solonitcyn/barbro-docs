@@ -1,6 +1,6 @@
 # ADR-0006: Stack and hosting
 
-Status: accepted, amended 2026-09-27 (see Amendments)
+Status: accepted, amended 2026-09-28 (see Amendments)
 Date: 2026-09-26
 
 ## Context

@@ -15,7 +15,7 @@
     "genai",
     "Herbacious", "HTMX", "HSTS",
     "Litestream",
-    "Netcup",
+    "Netcup", "nodelib",
     "Passwordless", "PKCE",
     "rasmusab",
     "Scaleway", "Supabase",

@@ -7,6 +7,7 @@
   "engines": {
     "node": ">=24"
   },
+  "packageManager": "npm@11.19.1",
   "private": true,
   "scripts": {
     "lint:cspell": "cspell .",
