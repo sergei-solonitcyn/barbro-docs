@@ -1,6 +1,6 @@
 # ADR-0006: Stack and hosting
 
-Status: accepted
+Status: accepted, amended 2026-09-27 (see Amendments)
 Date: 2026-09-26
 
 ## Context
@@ -58,3 +58,11 @@ Plain Fastify was dropped not for its shortcomings but on the market criterion; 
 - Accepted risks: Hetzner raised prices twice in 2026 — the budget has margin; one server — 99%, no more, as in the NFRs; Litestream is a third-party tool on the critical backup path, restore is verified in phase 5 without fail.
 - Repositories: monorepo `barbro` with pnpm workspaces — `apps/api`, `apps/web`, `packages/shared` (Zod schemas and types shared by frontend and backend), `infra/` (compose, Caddyfile, server scripts); `barbro-docs` separately, per the methodology.
 - Open (in STATE, not in the ADR): the code license of the public repo — MIT or AGPL; the concrete domain.
+
+## Amendments
+
+### 2026-09-27: runtime, validation glue, open items
+
+- **Runtime: Node.js 26 LTS instead of 24.** Node.js 26 is promoted to LTS in October 2026 and reaches end of life in April 2029, a year later than Node.js 24 (April 2028). By this ADR's own criterion, the LTS with the longest support at the start, it wins. At scaffolding time it is still Current for a few weeks; production (phase 4) starts after the LTS promotion. The main compatibility risk for a native module is gone: better-sqlite3 13 is built on Node-API, so its prebuilt binaries no longer depend on the Node.js ABI.
+- **Validation: NestJS built-in Standard Schema support instead of `nestjs-zod`.** NestJS 12 validates Zod schemas natively (`@Body({ schema })` with `StandardSchemaValidationPipe`), and `@nestjs/swagger` 12 reflects them into OpenAPI via `standardSchemaConverter`. The decision itself (one Zod schema shared by frontend and backend, no class-validator) is unchanged; only the glue library is dropped. Response serialization is revisited at the first endpoint with a real contract.
+- **Open items.** The code license is resolved: AGPL-3.0 (see `STATE.md`). The domain is still open.
