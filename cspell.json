@@ -17,7 +17,7 @@
     "Litestream",
     "Netcup", "nodelib",
     "Passwordless", "PKCE",
-    "rasmusab",
+    "rasmusab", "renovatebot",
     "Scaleway", "Supabase",
     "teijo"
   ]
