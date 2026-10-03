@@ -8,7 +8,8 @@ Method: STRIDE by hand over the data flows; no tool used — the system has six 
 In order of importance:
 
 1. **Budget** — the LLM and DeepL quotas. The only asset whose loss costs money, and the only one that attracts automated abuse.
-2. **Secrets** — the LLM provider key, the DeepL key, the Google OAuth client secret, the server's SSH key, the R2 and GHCR tokens.
+2. **Secrets** — the LLM provider key, the DeepL key, the Google OAuth client secret, the server's SSH key, the R2
+   token. GHCR packages are public: the server pulls anonymously and holds no GitHub or GHCR token.
 3. **Personal data** — email, Google `sub`, bar contents, the context text (it goes to DeepL and the LLM).
 4. **The server** — as a resource for someone else's mining or spam after a compromise.
 5. **Availability** — 99%, one server; the real price of downtime is reputation, not money.
@@ -41,7 +42,7 @@ flowchart LR
   A -->|HTTPS, key| D
   A -->|HTTPS, key| L
   B -->|HTTPS, key| R
-  vps -->|image pull| GH
+  vps -->| image pull, CI status, infra/|GH
 ```
 
 Boundaries: browser ↔ API (the single public entry point); API ↔ external services (our keys outbound, foreign data inbound); CI ↔ server (deploy).
@@ -81,15 +82,16 @@ The server's origin IP is hidden behind the Cloudflare proxy; the server directl
 
 ### 3.4 Server and deploy
 
-| Threat                                           | Control                                                                                                                                                                                                                                                                                                | Where          |
-|--------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
-| SSH brute force                                  | Keys only (ed25519); `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `AllowUsers ss`; port 22 is open to the internet (see accepted risks); fail2ban is not used — with key-only authentication brute force cannot succeed, fail2ban would only reduce log noise | Hetzner, sshd  |
-| Pre-auth vulnerability in OpenSSH                | `unattended-upgrades` with the Debian-Security origin; no exposure reduction by source IP — accepted risk                                                                                                                                                                                              | server         |
-| Direct access to the origin bypassing Cloudflare | Firewall by Cloudflare ranges; the ranges are refreshed automatically by a script via the Hetzner API (cron), otherwise a range change silently cuts off traffic; Caddy with a Cloudflare origin certificate or Let's Encrypt via DNS challenge                                                        | Hetzner, Caddy |
-| Vulnerabilities in the OS and dependencies       | `unattended-upgrades`; Renovate for pnpm and base images; `pnpm audit` in CI (blocks high/critical); images pinned by digest                                                                                                                                                                           | server, CI     |
-| CI compromise → deploying foreign code           | Images are published only from `main`; a protected branch with required CI; the server pulls images by the `main` tag and verifies the digest; CI has no access to the server whatsoever                                                                                                               | GitHub, server |
-| Container running as root                        | A non-root user in the Dockerfile; read-only fs except the SQLite volume; no `--privileged`                                                                                                                                                                                                            | Compose        |
-| Leak through logs                                | pino without request bodies; email and context are masked; Sentry `sendDefaultPii: false`, scrubbing; 14-day log rotation                                                                                                                                                                              | API, Sentry    |
+| Threat                                                                | Control                                                                                                                                                                                                                                                                                                | Where          |
+|-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
+| SSH brute force                                                       | Keys only (ed25519); `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `AllowUsers ss`; port 22 is open to the internet (see accepted risks); fail2ban is not used — with key-only authentication brute force cannot succeed, fail2ban would only reduce log noise | Hetzner, sshd  |
+| Pre-auth vulnerability in OpenSSH                                     | `unattended-upgrades` with the Debian-Security origin; no exposure reduction by source IP — accepted risk                                                                                                                                                                                              | server         |
+| Direct access to the origin bypassing Cloudflare                      | Firewall by Cloudflare ranges; the ranges are refreshed automatically by a script via the Hetzner API (cron), otherwise a range change silently cuts off traffic; Caddy with a Cloudflare origin certificate or Let's Encrypt via DNS challenge                                                        | Hetzner, Caddy |
+| Vulnerabilities in the OS and dependencies                            | `unattended-upgrades`; Renovate for pnpm and base images; `pnpm audit` in CI (blocks high/critical); images pinned by digest                                                                                                                                                                           | server, CI     |
+| CI compromise → deploying foreign code                                | Images are published only from `main`; a protected branch with required CI; the server deploys only the HEAD of `main` whose CI run succeeded, resolves its `sha-<commit>` tags to digests once and runs exactly those digests (ADR-0007); CI has no access to the server whatsoever                   | GitHub, server |
+| Image replaced behind a `sha-<commit>` tag (leaked GHCR write access) | Only CI on `main` and SS's account can push; accepted for now — hardening path: signed GitHub artifact attestations verified before deploy (ADR-0007)                                                                                                                                                  | GHCR, server   |
+| Container running as root                                             | A non-root user in the Dockerfile; read-only fs except the SQLite volume; no `--privileged`                                                                                                                                                                                                            | Compose        |
+| Leak through logs                                                     | pino without request bodies; email and context are masked; Sentry `sendDefaultPii: false`, scrubbing; 14-day log rotation                                                                                                                                                                              | API, Sentry    |
 
 ### 3.5 Data and backups
 
@@ -101,11 +103,12 @@ The server's origin IP is hidden behind the Cloudflare proxy; the server directl
 
 ### 3.6 Availability
 
-| Threat                  | Control                                                                                          | Where               |
-|-------------------------|--------------------------------------------------------------------------------------------------|---------------------|
-| DDoS / L7 flood         | Cloudflare proxy + a rate limiting rule on `/api/*`; the API rate limit as the second layer      | Cloudflare, API     |
-| Server or process crash | Docker `restart: unless-stopped`; UptimeRobot → Telegram; one server — 99%, accepted in the NFRs | Compose, monitoring |
-| DeepL or LLM outage     | FR-3b returns a clear error, FR-3a works independently; 15 s timeout, no retries on paid calls   | adapters            |
+| Threat                              | Control                                                                                                                                                       | Where               |
+|-------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------|
+| DDoS / L7 flood                     | Cloudflare proxy + a rate limiting rule on `/api/*`; the API rate limit as the second layer                                                                   | Cloudflare, API     |
+| Server or process crash             | Docker `restart: unless-stopped`; UptimeRobot → Telegram; one server — 99%, accepted in the NFRs                                                              | Compose, monitoring |
+| DeepL or LLM outage                 | FR-3b returns a clear error, FR-3a works independently; 15 s timeout, no retries on paid calls                                                                | adapters            |
+| A broken release reaches the server | The deploy agent checks that both services report the target revision; on failure it rolls back to the previous digests and marks the revision bad (ADR-0007) | server              |
 
 ## 4. Accepted risks
 
