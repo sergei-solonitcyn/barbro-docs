@@ -44,7 +44,8 @@ flowchart LR
   vps -->|image pull| GH
 ```
 
-Boundaries: browser ↔ API (the single public entry point); API ↔ external services (our keys outbound, foreign data inbound); CI ↔ server (deploy). The server's origin IP is hidden behind the Cloudflare proxy; the server directly accepts only 22 (from SS's IP) and 80/443 (from Cloudflare ranges). Deploy is pull-based: the server fetches images from GHCR itself; CI has no access to the server.
+Boundaries: browser ↔ API (the single public entry point); API ↔ external services (our keys outbound, foreign data inbound); CI ↔ server (deploy).
+The server's origin IP is hidden behind the Cloudflare proxy; the server directly accepts only 22 (from SS's IP) and 80/443 (from Cloudflare ranges). Deploy is pull-based: the server fetches images from GHCR itself; CI has no access to the server.
 
 ## 3. Threats and controls
 
@@ -80,14 +81,15 @@ Boundaries: browser ↔ API (the single public entry point); API ↔ external se
 
 ### 3.4 Server and deploy
 
-| Threat                                           | Control                                                                                                                                                                                                                                         | Where          |
-|--------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
-| SSH brute force                                  | Keys only, `PasswordAuthentication no`; Hetzner Cloud Firewall: 22 — from SS's IP, 80/443 — only from Cloudflare ranges; fail2ban is redundant with such a firewall                                                                             | Hetzner, sshd  |
-| Direct access to the origin bypassing Cloudflare | Firewall by Cloudflare ranges; the ranges are refreshed automatically by a script via the Hetzner API (cron), otherwise a range change silently cuts off traffic; Caddy with a Cloudflare origin certificate or Let's Encrypt via DNS challenge | Hetzner, Caddy |
-| Vulnerabilities in the OS and dependencies       | `unattended-upgrades`; Renovate for pnpm and base images; `pnpm audit` in CI (blocks high/critical); images pinned by digest                                                                                                                    | server, CI     |
-| CI compromise → deploying foreign code           | Images are published only from `main`; a protected branch with required CI; the server pulls images by the `main` tag and verifies the digest; CI has no access to the server whatsoever                                                        | GitHub, server |
-| Container running as root                        | A non-root user in the Dockerfile; read-only fs except the SQLite volume; no `--privileged`                                                                                                                                                     | Compose        |
-| Leak through logs                                | pino without request bodies; email and context are masked; Sentry `sendDefaultPii: false`, scrubbing; 14-day log rotation                                                                                                                       | API, Sentry    |
+| Threat                                           | Control                                                                                                                                                                                                                                                                                                | Where          |
+|--------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
+| SSH brute force                                  | Keys only (ed25519); `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `AllowUsers ss`; port 22 is open to the internet (see accepted risks); fail2ban is not used — with key-only authentication brute force cannot succeed, fail2ban would only reduce log noise | Hetzner, sshd  |
+| Pre-auth vulnerability in OpenSSH                | `unattended-upgrades` with the Debian-Security origin; no exposure reduction by source IP — accepted risk                                                                                                                                                                                              | server         |
+| Direct access to the origin bypassing Cloudflare | Firewall by Cloudflare ranges; the ranges are refreshed automatically by a script via the Hetzner API (cron), otherwise a range change silently cuts off traffic; Caddy with a Cloudflare origin certificate or Let's Encrypt via DNS challenge                                                        | Hetzner, Caddy |
+| Vulnerabilities in the OS and dependencies       | `unattended-upgrades`; Renovate for pnpm and base images; `pnpm audit` in CI (blocks high/critical); images pinned by digest                                                                                                                                                                           | server, CI     |
+| CI compromise → deploying foreign code           | Images are published only from `main`; a protected branch with required CI; the server pulls images by the `main` tag and verifies the digest; CI has no access to the server whatsoever                                                                                                               | GitHub, server |
+| Container running as root                        | A non-root user in the Dockerfile; read-only fs except the SQLite volume; no `--privileged`                                                                                                                                                                                                            | Compose        |
+| Leak through logs                                | pino without request bodies; email and context are masked; Sentry `sendDefaultPii: false`, scrubbing; 14-day log rotation                                                                                                                                                                              | API, Sentry    |
 
 ### 3.5 Data and backups
 
@@ -112,6 +114,9 @@ Boundaries: browser ↔ API (the single public entry point); API ↔ external se
 - Moderation of LLM explanations — the system prompt only; reports — after MVP.
 - Client-side backup encryption — decided at implementation; R2 encrypts at rest.
 - The public repo reveals the limit logic — security through obscurity is not a control; the limits work with full knowledge of the code.
+- SSH port 22 open to the internet. SS's IP is dynamic, so a source-IP rule would need updating on every change.
+  Residual risk: a pre-auth vulnerability in OpenSSH (e.g., CVE-2024-6387) is exploitable until the Debian security
+  update lands; key-only authentication does not mitigate it.
 
 ## 5. What goes into implementation
 
