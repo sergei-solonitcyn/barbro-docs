@@ -19,7 +19,7 @@
     "minimumReleaseAgeBehaviour",
     "Netcup", "nodelib", "nonroot",
     "Passwordless", "pipefail", "PKCE",
-    "rasmusab", "renovatebot",
+    "rasmusab", "renovatebot", "repoints",
     "Scaleway", "setcap", "setpriv", "SIGPIPE", "solonitcyn", "Supabase",
     "teijo", "tmpfs", "trixie"
   ]
