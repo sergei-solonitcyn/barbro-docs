@@ -14,7 +14,7 @@ updates:
         patterns:
           - "markdownlint-cli2"
           - "cspell"
-          - "cspell/dict-uk-ua"
+          - "@cspell/dict-uk-ua"
     directory: "/"
     schedule:
       interval: "weekly"

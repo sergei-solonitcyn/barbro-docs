@@ -344,6 +344,14 @@ Both repos are public.
 - actionlint as part of the `lint` job — optional; it caught `workflow_dispatch: true` in review.
 - Dependabot in `barbro-docs`: confirm both ecosystems run without errors and the first PR has a correct commit title
   (`ci(deps): …`, `chore(deps-dev): …`).
+- `barbro-docs` `.github/dependabot.yaml`: the group pattern `cspell/dict-uk-ua` lacks the `@` and does not match
+  `@cspell/dict-uk-ua`, so that dictionary would get its own PR instead of joining the `npm` group — fix the pattern.
+- `barbro-docs`: `npm audit` reports 5 high — one advisory, CVE-2026-93687 (GHSA-vfj7-8cjw-p6xm, reviewed 2026-10-02):
+  stack exhaustion in `braces` ≤ 3.0.3 on deeply nested brace patterns, reached via `markdownlint-cli2` → `globby` →
+  `fast-glob` → `micromatch`. No patched version exists. Accepted risk: a dev-only lint tool that expands only globs
+  from our own repo, so the worst case is a crashed lint run; no exposure in the deployed product (`barbro`'s lockfile
+  has no `braces`). Do not run `npm audit fix --force`: its "fix" downgrades `markdownlint-cli2` to 0.0.4. Take the
+  `braces` patch when it ships.
 - `adr/README.md`: status of ADR-0006 → "accepted, amended".
 - OIDC theory: proposed to move it to the start of the auth milestone (no auth in M0); confirm.
 - LLM model — by the eval set (~20 EN cases, with injection); candidates GPT-6 Luna, Gemini 3.5 Flash-Lite, Claude Haiku
