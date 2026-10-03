@@ -18,9 +18,10 @@
     "Litestream",
     "minimumReleaseAgeBehaviour",
     "Netcup", "nodelib", "nonroot",
+    "oneshot",
     "Passwordless", "pipefail", "PKCE",
     "rasmusab", "renovatebot", "repoints",
-    "Scaleway", "setcap", "setpriv", "SIGPIPE", "solonitcyn", "Supabase",
+    "Scaleway", "setcap", "setpriv", "shellcheck", "SIGPIPE", "solonitcyn", "Supabase",
     "teijo", "tmpfs", "trixie"
   ]
 }

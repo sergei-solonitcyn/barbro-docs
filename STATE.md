@@ -4,12 +4,13 @@ Updated: 2026-10-03
 
 ## Phase and milestone
 
-Phase 3 Implementation, milestone M0 "Skeleton" — about 85%. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on
+Phase 3 Implementation, milestone M0 "Skeleton" — about 95%. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on
 Fastify, `GET /api/health` with the build revision) and `apps/web` (Vite + React SPA with a dev proxy to the API), both
 built test-first; a README; CI with seven required checks; self-hosted Renovate with automerge. CI builds and
 smoke-tests two images on every PR through a matrix — `barbro-api` and `barbro-web` (Caddy serving the SPA) — and
-publishes both to GHCR from `main`. Remaining in M0: the server with firewall and pull deploy, the edge Caddy + TLS.
-Both repos are public.
+publishes both to GHCR from `main`. The production server (Hetzner CX23, Debian 13, bootstrapped by cloud-init) runs
+`web` and `api` from `infra/compose.yaml`; a pull deploy agent (ADR-0007) deploys every green merge to `main` by digest,
+hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the domain. Both repos are public.
 
 ## Done
 
@@ -112,6 +113,47 @@ Both repos are public.
     only by the "no errors in logs" check.
   - `publish` pushes `ghcr.io/sergei-solonitcyn/barbro-web:sha-<commit>` next to `barbro-api`, each digest in its own
     job summary; the `barbro-web` package made public.
+- Server bootstrap, merged via PR:
+  - `infra/cloud-init.yaml`: user `ss` with two ed25519 keys (one per machine), passwordless sudo, `docker` group;
+    sshd drop-in `10-barbro.conf` (`PermitRootLogin no`, password and keyboard-interactive off, `AllowUsers ss`);
+    Docker's apt repository with its key pinned inline (fingerprint `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF
+    CD88`); packages `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-compose-plugin`, `unattended-upgrades`,
+    `jq`; `daemon.json` with the `local` log driver and `live-restore`; `20auto-upgrades` and the automatic reboot at
+    03:30 UTC written with `defer: true`.
+  - Validated locally before use: `cloud-init schema` in a `debian:trixie` container, plus an apt check that the key
+    from the YAML verifies Docker's repository. The apt check caught two real defects the schema check cannot see: a
+    pasted `Release.gpg` signature instead of the key, then a truncated key.
+  - Server `barbro-server`: CX23, `nbg1`, Debian 13, IPv4 + IPv6, created with
+    `hcloud server create … --user-data-from-file infra/cloud-init.yaml`. The first server, created in the Console,
+    received empty user data (`/var/lib/cloud/instance/user-data.txt` empty) and ran with image defaults, including
+    password authentication; deleted and recreated with the CLI.
+  - Verified on the server: `sshd -T` (root, password, keyboard-interactive off, `AllowUsers ss`); `docker info` —
+    `local true`; `unattended-upgrade --dry-run` — Debian and Debian-Security origins for `trixie`; the cloud-init log
+    has only `DEBUG` lines about a metadata request retried before the network was up; root login with the right key
+    rejected.
+  - `infra/README.md`: runbook — create with the CLI, post-boot checks with expected output, local validation, updates.
+- `barbro-docs`: `threat-model.md` (SSH 22 open as an accepted risk; deploy controls per ADR-0007; GHCR token removed
+  from the secrets; rows for a replaced image and a broken release), `architecture.md` §5 (deploy, firewall, logs),
+  ADR-0007 with the `adr/README.md` row. Merged via PR.
+- `infra/compose.yaml`, merged via PR: `name: barbro`; shared hardening in an `x-hardening` anchor (`cap_drop: ALL`,
+  `read_only`, `restart: unless-stopped`, `no-new-privileges`); images from `${API_IMAGE:?}` / `${WEB_IMAGE:?}`; ports
+  `127.0.0.1:3000` (`api`) and `127.0.0.1:8081` (`web`); `stop_grace_period` 20 s for `api`, 10 s for `web`; `web`
+  tmpfs `/data` with `uid=65532,gid=65532,mode=0700`. A manual run on the server returned revision `b66efb1` from
+  both services with no errors in the logs.
+- Smoke scripts run the images through `infra/compose.yaml` (`-p barbro-smoke`; the image of the service not under
+  test is `unused`, because Compose interpolates the whole file), so CI tests the production runtime flags. Before
+  this, the API smoke test ran without any hardening flags.
+- Pull deploy agent (ADR-0007), merged via PR and installed on the server:
+  - `infra/deploy/barbro-deploy` (bash), `barbro-deploy.service` (oneshot, user `barbro`, `SupplementaryGroups=docker`,
+    `StateDirectory=barbro`), `barbro-deploy.timer` (`OnCalendar=*:0/5`).
+  - Tested by Claude against mocks of GitHub, GHCR and codeload with a fake `docker` (11 scenarios: first deploy, no
+    change, CI not green, health failure with rollback and `bad`, `bad` skipped, missing images, normal deploy with
+    `previous`, GitHub down, pin, pin kept, pin removed); `shellcheck` clean; GHCR digest resolution and the codeload
+    `infra/` extraction checked against the real services.
+  - On the server: the first manual run exited silently — CI for the HEAD (merged 81 s earlier) was still running;
+    fixed by logging `waiting: no successful CI run`. A pin to a SHA without images failed without changing the
+    running services. The merge of the fix was deployed hands-off by the previous agent version, then the agent was
+    reinstalled.
 
 ## Decisions
 
@@ -287,6 +329,31 @@ Both repos are public.
     compensating control — cosign signature verification (open question).
   - Validation uses the runner's version, from the repo root and without a file argument (with one, the file is
     validated as global config): `npx --yes --package renovate@<version> -- renovate-config-validator`.
+- ADR-0007 — pull deploy: a systemd timer runs an agent every 5 minutes; target is the HEAD of `main` whose `ci.yaml`
+  push run succeeded (a pin file overrides it); both `sha-<commit>` tags resolved to digests once; `infra/` of the
+  same commit; health check on the revision of both services; rollback to the running revision and a `bad` mark on
+  failure. Option chosen over a moving registry tag and a CI-published release manifest (which needs
+  `contents: write`).
+- Server:
+  - Debian 13, the same distribution as the image bases; Hetzner `nbg1`; IPv4 kept (GHCR and GitHub API reachability
+    over IPv6 not measured).
+  - Bootstrap by `infra/cloud-init.yaml`; servers are created only with `hcloud --user-data-from-file`, never through
+    the Console form.
+  - Hetzner's Docker CE app image rejected: Ubuntu only, and its apt pin (priority 1 for every package from
+    `download.docker.com` except `docker-ce`) freezes `containerd.io` (with `runc`), `docker-ce-cli` and the Compose
+    plugin — measured: `apt upgrade` leaves them at the snapshot version.
+  - Hetzner Cloud Firewall (outside the VM, unaffected by Docker's iptables rules): 22 open to the internet with
+    key-only authentication — SS's IP is dynamic, accepted risk in the threat model; fail2ban not used.
+  - Updates: `unattended-upgrades` for Debian and Debian-Security, automatic reboot at 03:30 UTC; Docker Engine
+    upgraded manually; `live-restore` keeps containers running across daemon restarts.
+  - Docker `local` log driver (rotated by size, compressed).
+  - The origin IP stays out of public repos — Cloudflare is meant to hide it.
+- Compose: `infra/compose.yaml` is the single runtime spec for CI smoke tests and the server; localhost ports stay
+  permanently (agent health check, smoke tests); `stop_grace_period` follows the longest legitimate request (`api`:
+  the 15 s LLM timeout plus a margin).
+- Deploy agent: a dedicated system user `barbro` in the `docker` group — separates state and journal, not privilege
+  (the group is root-equivalent); the agent does not update itself (reinstall per `infra/README.md`); unused images
+  older than a week are pruned (a rollback re-pulls by digest); silent only when there is nothing to do.
 
 ## Stack and tools
 
@@ -299,6 +366,8 @@ Both repos are public.
 - **Infrastructure:** Docker (multi-stage, distroless and Alpine runtimes, Buildx), Docker Compose, Caddy (edge and
   static); GitHub Actions, GHCR; Sentry, UptimeRobot; Cloudflare DNS/proxy/R2. Locally Docker Desktop on macOS (arm64)
   and podman on one of the machines.
+- **Server:** Hetzner Cloud CX23 (`hcloud` CLI, Cloud Firewall), Debian 13, cloud-init, `unattended-upgrades`; deploy
+  agent in bash + curl + jq under a systemd timer, logs in journald.
 - **Quality and testing:** Biome 2.5; Vitest 4 (handles Nest decorator metadata out of the box, no SWC plugin);
   fast-check for property-based tests; Playwright; gitleaks (binary in CI); Renovate (self-hosted, own GitHub App);
   husky + lint-staged; Bruno for the API; bash + curl image smoke tests.
@@ -307,19 +376,27 @@ Both repos are public.
 
 ## Open questions
 
-- Pull deploy: how the server learns the pair of digests of one commit, taken only when the whole `publish` matrix
-  succeeded (an image of one app may be published without the other). `threat-model.md` says the server pulls by the
-  `main` tag, while CI publishes only `sha-<commit>` tags — resolve in the deploy step, then align `threat-model.md`.
-- How `infra/` (`compose.yaml`, the edge Caddyfile) reaches the server — decide with the pull deploy.
+- Log retention: `threat-model.md` promises 14-day log rotation, the `local` driver rotates by size (about 100 MB per
+  container), so with low traffic logs can live longer — decide in M1 together with pino logging (rewrite the control
+  or add a time limit).
+- Rollback after a failed health check is verified only against mocks — a revision that passes CI and fails on the
+  server is unlikely now that CI tests the same `compose.yaml`. Prove it on the server in M1, when a server-side `.env`
+  appears (a missing secret gives a natural red case).
+- Smoke via Compose: confirm the red check was run (`web` tmpfs without `uid`/`gid` must fail `image (web)`).
+- Edge step: 80/443 only from Cloudflare ranges — refreshing the ranges needs a Hetzner API token on the server;
+  keep that rule in a separate firewall (`barbro-web`) so it never overwrites the SSH rule (`replace-rules` replaces
+  all rules of a firewall). TLS: Cloudflare origin certificate or Let's Encrypt via DNS challenge.
+- Hetzner API token (Read & Write) on SS's Mac in `~/.config/hcloud/cli.toml` in plain text — keep or revoke between
+  server rebuilds.
+- Deploy failures are visible only in journald until alerting exists (`OnFailure=` or monitoring in phase 5).
+- Hardening path from ADR-0007: signed GitHub artifact attestations verified on the server before deploy.
 - `architecture.md`: the Container diagram and table show one Caddy serving the SPA; update to `edge` + `web` + `api`
   (Claude drafts it in the edge step).
 - Edge Caddy: the official image's file capability vs `cap_drop: ALL` while binding 80/443 (`cap_add:
   NET_BIND_SERVICE` or high ports with a port mapping); `grace_period` in the Caddyfile aligned with
   `stop_grace_period` in Compose (Caddy's default waits for active requests forever, and LLM calls through `/api` take
-  seconds); whether `/data` must persist depends on how TLS is done with Cloudflare.
-- Compose on the server: every tmpfs with explicit `uid`, `gid`, `mode` (runtime defaults differ, measured in CI).
-- API smoke script: align its run flags with the web one (`--read-only`, `--cap-drop ALL`, `no-new-privileges`) —
-  optional.
+  seconds); whether `/data` must persist depends on how TLS is done with Cloudflare; `edge` reaches `web` and `api`
+  by service name on the Compose network.
 - Caddy 2.11.6 is in `docker-library/official-images` but not yet on Docker Hub — Renovate picks it up after the
   3-day cooldown.
 - `minimumReleaseAge`: confirm `pnpm config get minimumReleaseAge` returns 1440 (it returned `undefined` before the
@@ -481,18 +558,36 @@ Both repos are public.
 - GitHub Actions matrix: `strategy.matrix`, `fail-fast`, check names `job (value)`, matrix context in job-level `env`,
   a separate gha cache `scope` per build; a required check renamed by a matrix blocks its own PR until the ruleset is
   switched; a job skipped by `if` reports success, so it cannot be a meaningful required check — practiced.
+- cloud-init: runs once on the first boot; modules and stages (`users` and `write_files` before `packages`, `defer`
+  for files written after packages); `cloud-init schema` checks structure only; the Hetzner metadata service
+  (`169.254.169.254/hetzner/v1/userdata`) and `/var/lib/cloud/instance/user-data.txt` show what the server actually
+  received — practiced.
+- apt trust: a `signed-by` keyring holds a public key, not a `Release.gpg` signature; Debian 13 verifies with `sqv`,
+  whose errors tell a signature packet from a truncated key; apt pinning — a priority below 100 never upgrades an
+  installed package — measured.
+- sshd: drop-ins in `sshd_config.d`, the first value of a keyword wins, `sshd -T` shows the effective config — practiced.
+- Docker and firewalls: published ports bypass host iptables rules (`ufw`), so a cloud firewall outside the VM plus
+  `127.0.0.1` bindings — understood.
+- Compose: the project name comes from the directory unless `name:` is set; `${VAR:?}` is checked for the whole file,
+  not only the started service; `x-` extension fields with YAML anchors; `-p` overrides `name:` — practiced.
+- systemd: oneshot service plus timer, `OnCalendar` vs `OnUnitInactiveSec`, `StateDirectory`,
+  `SupplementaryGroups`, journald — practiced.
+- Registry API: an anonymous token plus a `HEAD` on the manifest returns `Docker-Content-Digest` without a pull;
+  GitHub REST API: 60 unauthenticated requests per hour per IP (`403` when exceeded), `application/vnd.github.sha`,
+  and an empty filter parameter (`head_sha=`) is ignored rather than matching nothing — measured.
+- A silent no-op is undiagnosable: an agent that waits must say why — learned from the first run.
 - Not yet: the event loop and synchronous better-sqlite3, OIDC flow, TanStack Query.
 
 ## Next step
 
-1. New chat "Phase 3, M0: Skeleton — server and deploy" on Opus 5.5 or Fable 5.1, High.
-2. Server: Hetzner CX23 (x86), firewall (22 from SS's IP, 80/443 from Cloudflare ranges), Docker + Compose with three
-   services `edge`, `web`, `api` (`stop_grace_period`, read-only root filesystem, `cap_drop: ALL`, tmpfs with explicit
-   `uid`/`gid`/`mode`).
-3. Pull deploy: how the server finds the digest pair of one commit (only after the whole `publish` matrix succeeded)
-   and how `infra/` reaches it; then align `threat-model.md`.
-4. Edge Caddy + TLS via Cloudflare; Claude updates the Container diagram in `architecture.md`. M0 criterion — an empty
-   application reachable over HTTPS, deployed from `main` hands-off; `/api/health` and `/revision` show the deployed
-   revision.
-5. In parallel, SS: domain (blocks the TLS step), Azure F0 test, the LLM eval set; confirm Dependabot; update the
-   ADR-0006 status in `adr/README.md`; check the Renovate Dependency Dashboard (distroless, `Node.js` group, Caddy).
+1. SS: buy the domain (blocks the rest of M0) and put its zone on Cloudflare.
+2. New chat "Phase 3, M0: Skeleton — edge and TLS" on Opus 5.5 or Fable 5.1, High:
+   - `edge` service (Caddy) in `infra/compose.yaml`: 80/443, file capability vs `cap_drop: ALL`, `grace_period`
+     aligned with `stop_grace_period`, routing to `web` and `api` by service name;
+   - TLS with Cloudflare (origin certificate or Let's Encrypt via DNS challenge); Cloudflare proxy;
+   - firewall `barbro-web` for 80/443 from Cloudflare ranges and the way the ranges are refreshed;
+   - Claude updates the Container diagram and the Compose description in `architecture.md`;
+   - M0 criterion: an empty application reachable over HTTPS, deployed from `main` hands-off; `/api/health` and
+     `/revision` show the deployed revision.
+3. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; update the ADR-0006 status in
+   `adr/README.md`; check the Renovate Dependency Dashboard (distroless, `Node.js` group, Caddy).
