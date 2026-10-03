@@ -8,13 +8,14 @@
     "@cspell/dict-uk-ua/cspell-ext.json"
   ],
   "words": [
-    "Barbro", "BarbroDocs", "Behaviour", "Buildx",
+    "Barbro", "BarbroDocs", "Buildx",
     "Citrusy", "crowdsourced",
     "deepl", "Difford's", "distroless", "DMARC",
     "Falkenstein",
     "genai",
     "Herbacious", "HTMX", "HSTS",
     "Litestream",
+    "minimumReleaseAgeBehaviour",
     "Netcup", "nodelib", "nonroot",
     "Passwordless", "PKCE",
     "rasmusab", "renovatebot",
