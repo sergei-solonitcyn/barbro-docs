@@ -10,3 +10,4 @@ One file per decision; an ADR is written only for decisions that are expensive t
 | [0004](0004-ingredient-catalog-model-and-matching-rules.md)   | Catalog tree for navigation; matching via `satisfies_parent` edges and a substitution table; default pantry        | accepted | 2026-09-26 |
 | [0005](0005-authentication.md)                                | Sign-in via Google OIDC only; server-side sessions in an httpOnly cookie; identity separated from user             | accepted | 2026-09-26 |
 | [0006](0006-stack-and-hosting.md)                             | TypeScript, NestJS on Fastify, Vite + React SPA, SQLite + Drizzle, Hetzner CX23 with Docker Compose, pull deploy   | accepted | 2026-09-26 |
+| [0007](0007-pull-deploy-mechanism.md)                         | Pull deploy: a systemd agent deploys the green HEAD of `main` by digest; health check with automatic rollback      | accepted | 2026-10-03 |

@@ -72,21 +72,21 @@ Adapters are the boundary for swapping providers without touching the modules:
 
 ```mermaid
 sequenceDiagram
-  participant B as Browser
-  participant A as API
-  participant G as Google
-  B->>A: GET /api/auth/google/start
-  A->>A: state, nonce, PKCE verifier → cookie
-  A-->>B: 302 to Google authorize
-  B->>G: consent
-  G-->>B: 302 /api/auth/google/callback?code&state
-  B->>A: callback
-  A->>A: verify state; exchange code (PKCE)
-  A->>G: token endpoint
-  G-->>A: id_token
-  A->>A: verify nonce, signature, email_verified
-  A->>A: upsert user + user_identity; create session
-  A-->>B: Set-Cookie session (httpOnly, Secure, Lax); 302 /
+    participant B as Browser
+    participant A as API
+    participant G as Google
+    B ->> A: GET /api/auth/google/start
+    A ->> A: state, nonce, PKCE verifier → cookie
+    A -->> B: 302 to Google authorize
+    B ->> G: consent
+    G -->> B: 302 /api/auth/google/callback?code&state
+    B ->> A: callback
+    A ->> A: verify state
+    A ->> G: token endpoint: exchange code (PKCE verifier)
+    G -->> A: id_token
+    A ->> A: verify nonce, signature, email_verified
+    A ->> A: upsert user + user_identity, create session
+    A -->> B: Set-Cookie session (httpOnly, Secure, Lax), 302 /
 ```
 
 ### 3.2 "What to make now" (FR-3a, deterministic)
@@ -115,13 +115,13 @@ sequenceDiagram
   participant A as API
   participant T as DeepL
   participant L as LLM
-  B->>A: POST /api/recommend {context: "with a cheese board, for guests"}
-  A->>A: per-user limit 10/day and global 200/day; length ≤ 200
-  A->>A: candidates = FR-3a without a filter
+  B ->> A: POST /api/recommend {context: "with a cheese board, for guests"}
+  A ->> A: per-user limit 10/day and global 200/day, length ≤ 200
+  A ->> A: candidates = FR-3a without a filter
   A->>T: translate(context, uk→en)
   A->>L: recommend(candidates[name, tags, abv, short description], context_en)
-  L-->>A: {picks: [{id, reason_en}]} (structured)
-  A->>A: drop ids outside the candidates; cap at 3–5
+  L -->> A: {picks: [{id, reason_en}]} (structured)
+  A ->> A: drop ids outside the candidates, cap at 3–5
   A->>T: translate(reasons, en→uk), cocktail names protected from translation
   A->>A: increment counters
   A-->>B: {picks: [{id, reason_uk}], remaining_today} — p95 < 10 s
@@ -136,10 +136,10 @@ erDiagram
   ingredient ||--o{ ingredient : parent
   ingredient ||--o{ recipe_ingredient : used_in
   recipe ||--|{ recipe_ingredient : has
-  recipe }o--o{ tag : recipe_tag
-  ingredient ||--o{ substitution : from
-  ingredient ||--o{ substitution : to
-  user ||--|{ user_identity : has
+  recipe }o--o{ tag: recipe_tag
+  ingredient ||--o{ substitution: "from"
+  ingredient ||--o{ substitution: "to"
+  user ||--|{ user_identity: has
   user ||--o{ user_bar_item : owns
   ingredient ||--o{ user_bar_item : is
   user ||--o{ session : has
@@ -221,19 +221,25 @@ Reference tables (`ingredient`, `recipe`, `recipe_ingredient`, `tag`, `substitut
 flowchart LR
   dev[SS: git push main] --> gha[GitHub Actions<br/>lint, test, audit, gitleaks, build]
   gha --> ghcr[(GHCR images api, caddy+spa)]
-  vps[Hetzner CX23<br/>cron: pull images by the main tag,<br/>docker compose up on a new digest] -->|pull| ghcr
+  vps[Hetzner CX23<br/>systemd timer: deploy the green HEAD of main<br/>by digest, health check, rollback] -->|pull| ghcr
   vps --> r2[(R2 backups)]
   vps -.-> sentry[Sentry]
   ur[UptimeRobot] -.-> vps
   ur -.-> tg[Telegram]
+  vps -.->|CI run status| gha
+  
 ```
 
 - One compose file: `caddy`, `api`, `litestream`; a volume for SQLite; secrets in `.env` with mode 600.
-- Deploy is pull-based: a cron script once a minute compares the digests of the `main` images in GHCR with the local ones and runs `docker compose pull && up -d` on change; CI has no access to the server. Rollback — `docker compose up` with the previous digest.
+- Deploy is pull-based (ADR-0007): every 5 minutes a systemd timer on the server takes the HEAD of `main` whose CI run
+  succeeded, resolves the `sha-<commit>` tags of both images to digests, fetches `infra/` of the same commit, and runs `docker
+  compose up -d` pinned by digest; a health check rolls back to the previous digests on failure; CI has no access to the
+  server. Manual rollback or freeze — a pin file with the SHA.
 - Monorepo `barbro`: `apps/api`, `apps/web`, `packages/shared`, `infra/`; documentation — `barbro-docs`.
-- Hetzner firewall: 22 from SS's IP, 80/443 from Cloudflare ranges.
+- Hetzner firewall: 22 open to the internet with key-only authentication (accepted risk, see the threat model); 80/443
+  from Cloudflare ranges.
 - Drizzle migrations run at `api` start-up after a Litestream snapshot.
-- Logs: pino → stdout → Docker json-file with rotation; errors → Sentry.
+- Logs: pino → stdout → Docker `local` log driver (rotated by size, compressed); errors → Sentry.
 - Restore: `litestream restore` into an empty volume — the procedure is in `runbook.md`, verified in phase 5.
 
 Cost: server ≈ €6, domain ≈ $1.5, DeepL $0 until the 1 million characters are exhausted, LLM ≈ $0.5–3 — ≈ $9–11 per month in total.
