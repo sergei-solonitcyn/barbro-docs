@@ -8,17 +8,19 @@
     "@cspell/dict-uk-ua/cspell-ext.json"
   ],
   "words": [
-    "Barbro", "BarbroDocs", "Behaviour", "Buildx",
-    "Citrusy", "crowdsourced",
-    "deepl", "Difford's", "distroless", "DMARC",
+    "Barbro", "BarbroDocs", "Buildx",
+    "Caddyfiles","Citrusy", "crowdsourced", "crun",
+    "deepl", "Difford's", "distroless", "DMARC", "Dockerfiles",
+    "execve",
     "Falkenstein",
-    "genai",
+    "genai", "GHSA",
     "Herbacious", "HTMX", "HSTS",
     "Litestream",
+    "minimumReleaseAgeBehaviour",
     "Netcup", "nodelib", "nonroot",
-    "Passwordless", "PKCE",
+    "Passwordless", "pipefail", "PKCE",
     "rasmusab", "renovatebot",
-    "Scaleway", "solonitcyn", "Supabase",
-    "teijo", "trixie"
+    "Scaleway", "setcap", "setpriv", "SIGPIPE", "solonitcyn", "Supabase",
+    "teijo", "tmpfs", "trixie"
   ]
 }
