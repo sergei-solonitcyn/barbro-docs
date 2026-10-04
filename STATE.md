@@ -1,16 +1,17 @@
 # STATE — BarBro
 
-Updated: 2026-10-03
+Updated: 2026-10-04
 
 ## Phase and milestone
 
-Phase 3 Implementation, milestone M0 "Skeleton" — about 95%. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on
-Fastify, `GET /api/health` with the build revision) and `apps/web` (Vite + React SPA with a dev proxy to the API), both
-built test-first; a README; CI with seven required checks; self-hosted Renovate with automerge. CI builds and
-smoke-tests two images on every PR through a matrix — `barbro-api` and `barbro-web` (Caddy serving the SPA) — and
-publishes both to GHCR from `main`. The production server (Hetzner CX23, Debian 13, bootstrapped by cloud-init) runs
-`web` and `api` from `infra/compose.yaml`; a pull deploy agent (ADR-0007) deploys every green merge to `main` by digest,
-hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the domain. Both repos are public.
+Phase 3 Implementation, milestone M0 "Skeleton" — about 99%. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on
+Fastify, `GET /api/health` with the build revision) and `apps/web` (Vite + React SPA), both built test-first; CI with
+eight required checks; self-hosted Renovate with automerge. CI builds and smoke-tests the `barbro-api` and `barbro-web`
+images, runs a system smoke test of the whole Compose stack through the edge, and publishes both images to GHCR from
+`main`. Production: `https://barbro.dev` — Cloudflare → Cloudflare Tunnel (`cloudflared`) → edge Caddy → `web` / `api`
+on a Hetzner CX23 with no inbound HTTP ports; a pull deploy agent (ADR-0007) deploys every green merge to `main` by
+digest. Remaining in M0: one merge deployed hands-off with all four services (the tunnel was started by hand once, see
+Done). Both repos are public.
 
 ## Done
 
@@ -155,6 +156,47 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
     running services. The merge of the fix was deployed hands-off by the previous agent version, then the agent was
     reinstalled.
 
+- Domain `barbro.dev`, registered 2026-10-04 with Cloudflare Registrar (zone on Cloudflare nameservers from the start);
+  DNSSEC enabled, DS published in `.dev` within hours, validated (`AD: true`).
+- Ingress decision: Cloudflare Tunnel instead of inbound 80/443 (ADR-0006 amendment of 2026-10-04; three options
+  compared: origin certificate + range firewall, Let's Encrypt DNS-01 + range firewall, tunnel). `threat-model.md`,
+  `architecture.md` (Container diagram and table: `tunnel`, `edge`, `web`), `adr/README.md` status updated.
+- Edge, merged via PR:
+  - `infra/edge/Caddyfile`: `admin off`, `persist_config off`, `grace_period 15s`; site `:8080`; `encode zstd gzip`;
+    HSTS, CSP (`default-src 'self'`, `frame-ancestors 'none'` and others), `nosniff`, `Referrer-Policy`,
+    `Permissions-Policy`, `-Server`; `/api/*` → `api:3000`, the rest → `web:8080`.
+  - `edge` service in `infra/compose.yaml`: official `caddy:2.11.4-alpine` by digest, `user: 65532:65532`, `cap_add:
+    NET_BIND_SERVICE`, `depends_on: api, web`, `127.0.0.1:8082`, `stop_grace_period: 20s`, tmpfs `/data`, Caddyfile
+    bind-mounted read-only.
+  - Measured by Claude against a real Caddy 2.11.6 with stub upstreams before use: routing, header removal, gzip; an
+    `X-Forwarded-For` sent by the client is overwritten; a 502 (upstream down) carries no security headers and `Server:
+    Caddy`.
+  - Verified by SS locally (podman) and on the server: both revisions through the edge, headers, gzip on assets (not on
+    the small `index.html`, below Caddy's 512-byte minimum), `immutable` passing through, stop in 0.5 s, no errors.
+- System smoke test, merged via PR:
+  - Job `system` (`needs: [image]`, builds both images from the `gha` cache with `cache-from` only), `publish` needs it;
+    required check (eight in total), proven red by removing `-Server`.
+  - `.github/scripts/smoke-system.sh`: the whole stack through `infra/compose.yaml`, all checks through the edge on
+    `127.0.0.1:8082` — both revisions, security headers and no `Server` on the SPA and the API, gzip and `immutable` on
+    an asset, no errors in edge logs after readiness. Tested by Claude on a harness (real Caddy edge and web Caddyfiles,
+    stub API): green and six red cases; `shellcheck` clean. The harness found two defects in the first version: startup
+    502s logged as errors by the edge, and `jq` on HTML aborting silently under `set -e`.
+- Deploy agent: health check through the edge (`127.0.0.1:8082`); Compose with `COMPOSE_PROFILES=tunnel`.
+- Tunnel, merged via PR:
+  - Remotely managed tunnel `barbro`; public hostname `barbro.dev` → `http://edge:8080`.
+  - `tunnel` service: `cloudflare/cloudflared:2026.9.3` by digest, `tunnel --grace-period 15s run --token-file
+    /run/secrets/tunnel-token`, profile `tunnel`, `stop_grace_period: 20s`; top-level Compose secret `tunnel-token` from
+    `/etc/barbro/tunnel-token` (root:65532, 0440).
+  - The commit deployed hands-off, but by the previous agent (installed from an outdated local checkout), without the
+    profile: `api`, `web`, `edge` up, `tunnel` not started; the health check did not notice (it bypasses the tunnel).
+    Fixed by installing the agent from the release directory and one manual `up -d` with the profile.
+  - Verified from outside: `https://barbro.dev/api/health` and `/revision` report the deployed commit over HTTP/2; all
+    security headers present.
+- Cloudflare zone settings: Full (strict), Always Use HTTPS, minimum TLS 1.2, TLS 1.3; HSTS only from the edge; DNS
+  holds only the tunnel CNAME. HTTP → 301 and the Cloudflare certificate checked by SS.
+- `infra/README.md`: Cloudflare Tunnel setup, token storage and rotation, zone settings; agent update from the release
+  directory; Compose commands for the running release.
+
 ## Decisions
 
 - ADR-0001 — Bar Assistant data (MIT) as the seed: all 663 recipes, status imported/reviewed, steps and descriptions
@@ -164,9 +206,10 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
   model by eval, fallback GPT-6 Luna.
 - ADR-0004 — catalog tree for navigation, matching via `satisfies_parent` + a substitution table; default pantry.
 - ADR-0005 — sign-in only via Google OIDC, server-side sessions in an httpOnly cookie, `user_identity` separate.
-- ADR-0006 (amended 2026-09-28) — TypeScript, Node 26 LTS, NestJS/Fastify, Vite + React SPA, SQLite + Drizzle, Hetzner
-  CX23 + Docker Compose + Caddy, GitHub Actions + GHCR with pull deploy, Sentry + UptimeRobot, Litestream → R2,
-  Cloudflare DNS; monorepo `barbro`; Zod via Nest's built-in Standard Schema support (no `nestjs-zod`).
+- ADR-0006 (amended 2026-09-28 and 2026-10-04) — TypeScript, Node 26 LTS, NestJS/Fastify, Vite + React SPA, SQLite +
+  Drizzle, Hetzner CX23 + Docker Compose + Caddy, GitHub Actions + GHCR with pull deploy, Sentry + UptimeRobot,
+  Litestream → R2, Cloudflare DNS; monorepo `barbro`; Zod via Nest's built-in Standard Schema support (no
+  `nestjs-zod`); ingress through a remotely managed Cloudflare Tunnel, no inbound HTTP; domain `barbro.dev`.
 - Licenses: `barbro` — `AGPL-3.0-or-later` (SPDX id in every `package.json`), `barbro-docs` — CC BY 4.0. Accepted risk:
   AGPL reduces reuse of the code by people reading the repo as a sample; changeable while SS is the only author.
 - Documentation norms: American English (en-US); markdownlint-cli2 with MD013 off; cspell en-US + `@cspell/dict-uk-ua`.
@@ -355,6 +398,30 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
   (the group is root-equivalent); the agent does not update itself (reinstall per `infra/README.md`); unused images
   older than a week are pruned (a rollback re-pulls by digest); silent only when there is nothing to do.
 
+- Edge (easily reversible, no ADR; one-role decision, platform engineer):
+  - Official Caddy image by digest with its Caddyfile from `infra/edge/`, bind-mounted from the release directory;
+    recreated on every deploy because that path changes per commit — accepted, `api` and `web` are recreated every
+    deploy anyway (revision baked into the image).
+  - `cap_add: NET_BIND_SERVICE` only so the kernel executes the official binary (file capability vs `cap_drop: ALL`);
+    listens on 8080. The process does hold the capability (measured on podman and on the server's Docker); it only
+    allows binding ports below 1024 in its own network namespace.
+  - `grace_period 15s` below `stop_grace_period: 20s`; security headers and compression live in the edge, caching
+    headers in `web`.
+  - The real client IP (`CF-Connecting-IP` trusted only from the `tunnel` container, Fastify trusting only the edge) —
+    in M1, with the rate limits.
+- Tunnel (within the ADR-0006 amendment):
+  - Remotely managed: one rule in the dashboard, routing stays in the edge Caddyfile; no `cert.pem` for the account on
+    the Mac.
+  - In the Compose profile `tunnel`, so CI never starts it; Compose ignores the missing secret file while the profile is
+    inactive (measured: CI and the deploy by the previous agent).
+  - Token as a file-based Compose secret, not an environment variable (visible in `docker inspect` and
+    `/proc/*/environ`); rotation — recreate the tunnel.
+- CI: the system smoke test is a separate job after both image legs, so a red image is not system-tested and the build
+  reuses the PR's cache; `publish` waits for it.
+- Deploy agent: updates are installed from the release directory of the deployed commit (the version CI checked), not
+  from a local checkout; a commit whose own deploy depends on its agent change needs a one-time manual step after the
+  install.
+
 ## Stack and tools
 
 - **Runtime and tooling:** Node 26 LTS (`fnm` + `.nvmrc` locally), TypeScript 6, pnpm 12.6 (Homebrew; version pinned via
@@ -363,8 +430,9 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
 - **Web client:** Vite 8, React 19, TanStack Query, Tailwind, shadcn/ui, PWA; tests with Vitest, jsdom and Testing
   Library. Served by Caddy 2.11 (`barbro-web` image).
 - **Data:** SQLite (better-sqlite3 13 on Node-API), Drizzle, Litestream.
-- **Infrastructure:** Docker (multi-stage, distroless and Alpine runtimes, Buildx), Docker Compose, Caddy (edge and
-  static); GitHub Actions, GHCR; Sentry, UptimeRobot; Cloudflare DNS/proxy/R2. Locally Docker Desktop on macOS (arm64)
+- **Infrastructure:** Docker (multi-stage, distroless and Alpine runtimes, Buildx), Docker Compose (profiles, file-based
+  secrets), Caddy (edge and static); Cloudflare Registrar, DNS (DNSSEC), proxy, Tunnel (`cloudflared`), R2; GitHub
+  Actions, GHCR; Sentry, UptimeRobot. Locally Docker Desktop on macOS (arm64)
   and podman on one of the machines.
 - **Server:** Hetzner Cloud CX23 (`hcloud` CLI, Cloud Firewall), Debian 13, cloud-init, `unattended-upgrades`; deploy
   agent in bash + curl + jq under a systemd timer, logs in journald.
@@ -376,6 +444,24 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
 
 ## Open questions
 
+- Caddy 2.11.6 (on Docker Hub since 2026-10-02, cooldown over): confirm that one Renovate PR updates both
+  `apps/web/Dockerfile` and the `edge` image in `infra/compose.yaml`; check the Dependency Dashboard for
+  `cloudflare/cloudflared` too.
+- Real client IP behind the tunnel — implement and test in M1 with the rate limits: the edge trusts `CF-Connecting-IP`
+  only from the `tunnel` container (`trusted_proxies`), Fastify trusts only the edge; two clients with different IPs get
+  different buckets.
+- The deploy agent's health check does not see the tunnel. Until UptimeRobot (phase 5): consider `cloudflared --metrics`
+  with its `/ready` endpoint as a cheap local check.
+- Edge 502 responses (upstream down) carry no security headers and expose `Server: Caddy`: Caddy's error path skips the
+  `header` directive. Empty body, low risk — decide whether a `handle_errors` block is worth it.
+- CSP: strict for the empty SPA; check the browser console on `barbro.dev` for violations as the SPA grows (inline
+  styles from UI libraries), loosen only per directive with a reason.
+- podman: `infra/compose.yaml` does not run under podman-compose — podman rejects the tmpfs options `uid=`/`gid=` (its
+  equivalent is `U`), so `CONTAINER_CLI=podman` in the smoke scripts is broken. Drop the podman claim from the scripts
+  or keep a local override; podman also refuses an `amd64`-only index on arm64 without `--platform`.
+- `www.barbro.dev` is not configured — decide on a redirect before phase 4.
+- Cloudflare rate limiting rule on `/api/*` (threat model) — set up in M1 together with the API limits.
+- Tunnel token rotation (recreate the tunnel) is documented but not rehearsed.
 - Log retention: `threat-model.md` promises 14-day log rotation, the `local` driver rotates by size (about 100 MB per
   container), so with low traffic logs can live longer — decide in M1 together with pino logging (rewrite the control
   or add a time limit).
@@ -383,22 +469,10 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
   server is unlikely now that CI tests the same `compose.yaml`. Prove it on the server in M1, when a server-side `.env`
   appears (a missing secret gives a natural red case).
 - Smoke via Compose: confirm the red check was run (`web` tmpfs without `uid`/`gid` must fail `image (web)`).
-- Edge step: 80/443 only from Cloudflare ranges — refreshing the ranges needs a Hetzner API token on the server;
-  keep that rule in a separate firewall (`barbro-web`) so it never overwrites the SSH rule (`replace-rules` replaces
-  all rules of a firewall). TLS: Cloudflare origin certificate or Let's Encrypt via DNS challenge.
 - Hetzner API token (Read & Write) on SS's Mac in `~/.config/hcloud/cli.toml` in plain text — keep or revoke between
   server rebuilds.
 - Deploy failures are visible only in journald until alerting exists (`OnFailure=` or monitoring in phase 5).
 - Hardening path from ADR-0007: signed GitHub artifact attestations verified on the server before deploy.
-- `architecture.md`: the Container diagram and table show one Caddy serving the SPA; update to `edge` + `web` + `api`
-  (Claude drafts it in the edge step).
-- Edge Caddy: the official image's file capability vs `cap_drop: ALL` while binding 80/443 (`cap_add:
-  NET_BIND_SERVICE` or high ports with a port mapping); `grace_period` in the Caddyfile aligned with
-  `stop_grace_period` in Compose (Caddy's default waits for active requests forever, and LLM calls through `/api` take
-  seconds); whether `/data` must persist depends on how TLS is done with Cloudflare; `edge` reaches `web` and `api`
-  by service name on the Compose network.
-- Caddy 2.11.6 is in `docker-library/official-images` but not yet on Docker Hub — Renovate picks it up after the
-  3-day cooldown.
 - `minimumReleaseAge`: confirm `pnpm config get minimumReleaseAge` returns 1440 (it returned `undefined` before the
   setting was added). Verify against pnpm docs the claim that the built-in default runs in a "loose mode"
   (auto-excluding immature versions) and an explicit value switches to strict.
@@ -429,12 +503,10 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
   from our own repo, so the worst case is a crashed lint run; no exposure in the deployed product (`barbro`'s lockfile
   has no `braces`). Do not run `npm audit fix --force`: its "fix" downgrades `markdownlint-cli2` to 0.0.4. Take the
   `braces` patch when it ships.
-- `adr/README.md`: status of ADR-0006 → "accepted, amended".
 - OIDC theory: proposed to move it to the start of the auth milestone (no auth in M0); confirm.
 - LLM model — by the eval set (~20 EN cases, with injection); candidates GPT-6 Luna, Gemini 3.5 Flash-Lite, Claude Haiku
   4.5.
 - Azure Translator F0 — test on the same phrases before the i18n milestone (needs a card).
-- Domain — blocks the edge Caddy + TLS step of M0.
 - 18+ for an alcohol site (Legal, before phase 4). Privacy policy with the list of processors. "Source" link in the UI
   footer (AGPL section 13) — phase 4 checklist.
 - Protecting cocktail names in DeepL (`tag_handling`) — verify at implementation.
@@ -576,18 +648,35 @@ hands-off. Remaining in M0: the edge Caddy + TLS via Cloudflare, blocked by the 
   GitHub REST API: 60 unauthenticated requests per hour per IP (`403` when exceeded), `application/vnd.github.sha`,
   and an empty filter parameter (`head_sha=`) is ignored rather than matching nothing — measured.
 - A silent no-op is undiagnosable: an agent that waits must say why — learned from the first run.
+- Cloudflare Tunnel: outbound-only connector (QUIC on 7844 with a TCP fallback), remotely vs locally managed, token as
+  the only secret, no inbound ports and no origin certificate; Cloudflare Registrar and DNSSEC (DS publication checked
+  via RDAP and DNS-over-HTTPS) — practiced.
+- Linux capabilities, refined: the kernel refuses `execve` of a binary whose file capability is outside the bounding
+  set, so a high port does not help; container runtimes put `cap_add` capabilities into the permitted and effective sets
+  before `exec`, so `no-new-privileges` has nothing to strip — measured on podman and Docker. A prediction from reading
+  kernel source was wrong; the measurement settled it.
+- Compose: profiles (inactive services are left out of `up`, `ps` and `logs`; a missing secret file of an inactive
+  service is tolerated — measured), file-based secrets without Swarm (bind mount, host permissions apply), a bind mount
+  from a per-release path recreates the container on every deploy — measured.
+- Caddy as a reverse proxy: `reverse_proxy` overwrites an untrusted `X-Forwarded-For`; `encode` skips responses under
+  512 bytes; the error path skips `header`; `grace_period` vs the stop timeout — measured.
+- Smoke tests of a whole stack: startup errors from retried requests must be excluded from the log check; a parser
+  (`jq`) in a command substitution under `set -e` aborts silently — learned from a test harness.
+- Deploying a change to the deployer: the commit that changes the agent is deployed by the previous agent; install
+  updates from the release directory, not from a local checkout — learned from the tunnel deploy.
+- Claude's sandbox runs on gVisor: capability and kernel behavior measured there is not evidence for Linux.
 - Not yet: the event loop and synchronous better-sqlite3, OIDC flow, TanStack Query.
 
 ## Next step
 
-1. SS: buy the domain (blocks the rest of M0) and put its zone on Cloudflare.
-2. New chat "Phase 3, M0: Skeleton — edge and TLS" on Opus 5.5 or Fable 5.1, High:
-   - `edge` service (Caddy) in `infra/compose.yaml`: 80/443, file capability vs `cap_drop: ALL`, `grace_period`
-     aligned with `stop_grace_period`, routing to `web` and `api` by service name;
-   - TLS with Cloudflare (origin certificate or Let's Encrypt via DNS challenge); Cloudflare proxy;
-   - firewall `barbro-web` for 80/443 from Cloudflare ranges and the way the ranges are refreshed;
-   - Claude updates the Container diagram and the Compose description in `architecture.md`;
-   - M0 criterion: an empty application reachable over HTTPS, deployed from `main` hands-off; `/api/health` and
-     `/revision` show the deployed revision.
-3. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; update the ADR-0006 status in
-   `adr/README.md`; check the Renovate Dependency Dashboard (distroless, `Node.js` group, Caddy).
+1. SS: merge the `barbro-docs` PR (amendment, threat model, architecture, `adr/README.md`, `cspell.json`, this
+   `STATE.md`) and the `barbro` PR with `infra/README.md`. The `barbro` merge is the last M0 check: it must deploy
+   hands-off with all four services — `journalctl -u barbro-deploy` shows the new revision deployed, `docker compose ps`
+   (with `COMPOSE_PROFILES=tunnel`) shows `tunnel` running, and `https://barbro.dev/revision` reports the new commit.
+   M0 is closed after that.
+2. New chat "Phase 3, M1: planning" on Fable 5.1, High: define the M1 vertical slice (by `threat-model.md` §5: Google
+   OIDC sign-in, sessions, rate limits and counters, the real client IP behind the tunnel, server-side `.env`, pino
+   logging, the Cloudflare rate limiting rule); OIDC theory at its start; prove the agent's rollback on the server with
+   the first `.env`.
+3. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; check the Renovate Dependency Dashboard
+   (distroless, `Node.js` group, Caddy 2.11.6 in both places, `cloudflared`).

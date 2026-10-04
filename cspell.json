@@ -10,18 +10,21 @@
   "words": [
     "Barbro", "BarbroDocs", "Buildx",
     "Caddyfiles","Citrusy", "crowdsourced", "crun",
-    "deepl", "Difford's", "distroless", "DMARC", "Dockerfiles",
+    "deepl", "Difford's", "distroless", "DMARC", "DNSSEC", "Dockerfiles",
     "execve",
     "Falkenstein",
     "genai", "GHSA",
     "Herbacious", "HTMX", "HSTS",
+    "journalctl",
     "Litestream",
     "minimumReleaseAgeBehaviour",
-    "Netcup", "nodelib", "nonroot",
+    "Netcup", "nodelib", "nonroot", "nosniff",
     "oneshot",
     "Passwordless", "pipefail", "PKCE",
-    "rasmusab", "renovatebot", "repoints",
+    "QUIC",
+    "rasmusab", "RDAP", "renovatebot", "repoints",
     "Scaleway", "setcap", "setpriv", "shellcheck", "SIGPIPE", "solonitcyn", "Supabase",
-    "teijo", "tmpfs", "trixie"
+    "teijo", "tmpfs", "trixie",
+    "zstd"
   ]
 }
