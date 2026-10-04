@@ -1,6 +1,6 @@
 # ADR-0006: Stack and hosting
 
-Status: accepted, amended 2026-09-28 (see Amendments)
+Status: accepted, amended (see Amendments)
 Date: 2026-09-26
 
 ## Context
@@ -66,3 +66,24 @@ Plain Fastify was dropped not for its shortcomings but on the market criterion; 
 - **Runtime: Node.js 26 LTS instead of 24.** Node.js 26 is promoted to LTS in October 2026 and reaches end of life in April 2029, a year later than Node.js 24 (April 2028). By this ADR's own criterion, the LTS with the longest support at the start, it wins. At scaffolding time it is still Current for a few weeks; production (phase 4) starts after the LTS promotion. The main compatibility risk for a native module is gone: better-sqlite3 13 is built on Node-API, so its prebuilt binaries no longer depend on the Node.js ABI.
 - **Validation: NestJS built-in Standard Schema support instead of `nestjs-zod`.** NestJS 12 validates Zod schemas natively (`@Body({ schema })` with `StandardSchemaValidationPipe`), and `@nestjs/swagger` 12 reflects them into OpenAPI via `standardSchemaConverter`. The decision itself (one Zod schema shared by frontend and backend, no class-validator) is unchanged; only the glue library is dropped. Response serialization is revisited at the first endpoint with a real contract.
 - **Open items.** The code license is resolved: AGPL-3.0 (see `STATE.md`). The domain is still open.
+
+### 2026-10-04: ingress through Cloudflare Tunnel; domain
+
+Replaces "Caddy (automatic TLS)" in the Hosting row and the inbound 80/443 assumption of the threat model. The rest of the decision is unchanged.
+
+**Context.** The architecture put Cloudflare in front of the server, so the origin must accept web traffic only from Cloudflare and hold a certificate Cloudflare trusts. At implementation three ways to do that were compared:
+
+| Option                                                                | Open on the server                | Secret on the server                                                                                                                         | Cloudflare IP ranges                                      | Edge image                       |
+|-----------------------------------------------------------------------|-----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------|----------------------------------|
+| A. Cloudflare origin certificate + firewall by Cloudflare ranges      | 22; 80/443 from Cloudflare ranges | origin certificate key; for automatic range refresh, a Hetzner API token, which is project-wide and can also delete the server and snapshots | in two places: the firewall and Caddy's `trusted_proxies` | official                         |
+| B. Let's Encrypt via DNS-01 + firewall by Cloudflare ranges           | 22; 80/443 from Cloudflare ranges | Cloudflare API token with DNS edit rights — whoever holds it can redirect the domain                                                         | same as A                                                 | custom build with a DNS plugin   |
+| C. Cloudflare Tunnel: `cloudflared` opens an outbound connection only | 22                                | tunnel token — whoever holds it can attach a connector and receive a share of the traffic                                                    | not needed                                                | official; TLS ends at Cloudflare |
+
+**Decision.** Option C, a remotely managed tunnel: the tunnel and its single rule (all traffic for `barbro.dev` → `http://edge:8080`) live in the Cloudflare dashboard; routing, security headers and compression stay in the edge Caddyfile in `infra/`. Domain: `barbro.dev`, registered with Cloudflare Registrar (at-cost pricing, the zone on Cloudflare nameservers from the start, DNSSEC enabled).
+
+**Consequences.**
+
+- We get: no inbound HTTP ports at all — the Hetzner firewall keeps a single rule for SSH, and direct access to the origin bypassing Cloudflare is closed by construction; no Cloudflare range list to keep in sync and no Hetzner API token on the server; no certificate on the origin; the real client IP needs to be trusted from one known peer (the `tunnel` container) instead of a list of ranges.
+- We pay: a fourth container (`cloudflared`, pinned by digest, updated by Renovate); the first secret on the server (the tunnel token, a Compose file-based secret, see `infra/README.md` in `barbro`); ingress depends on Cloudflare entirely — leaving Cloudflare means implementing option A or B first.
+- Accepted risks: a leaked tunnel token lets an attacker run a connector and receive part of the users' traffic, sessions included — mitigated by keeping the token only in a root-owned file readable by the container's group, and rotating it on any suspicion; the deploy agent's health check goes through the edge on localhost and does not see the tunnel, so a broken tunnel stays unnoticed until external monitoring exists (UptimeRobot, phase 5).
+- The domain open item is resolved.

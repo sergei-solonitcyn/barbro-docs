@@ -1,8 +1,8 @@
 # BarBro: Architecture
 
-Updated: 2026-09-26
+Updated: 2026-10-04
 Status: expert council review passed 2026-09-26; revisions applied
-Decisions: ADR-0001 … ADR-0006; threats and controls — `threat-model.md`.
+Decisions: ADR-0001 … ADR-0007; threats and controls — `threat-model.md`.
 
 ## 1. Context (C4 Context)
 
@@ -27,10 +27,12 @@ BarBro has no inbound integrations: nobody calls its API except its own frontend
 flowchart TB
   user([User])
   subgraph cf[Cloudflare]
-    proxy[DNS + proxy + WAF + rate limit]
+    proxy[DNS + proxy + WAF + rate limit<br/>TLS for barbro.dev]
   end
   subgraph vps[Hetzner CX23 · Docker Compose]
-    caddy[Caddy<br/>TLS, SPA static files, reverse proxy]
+    tunnel[cloudflared<br/>Cloudflare Tunnel connector]
+    edge[Caddy edge<br/>routing, security headers, compression]
+    web[Caddy web<br/>SPA static files, /revision]
     api[API<br/>NestJS on Fastify, TypeScript<br/>auth, bar, matching, limits,<br/>Translator and Sommelier adapters]
     db[(SQLite<br/>catalog, recipes, translations,<br/>users, bar, counters)]
     ls[Litestream<br/>WAL replication]
@@ -41,9 +43,12 @@ flowchart TB
   deepl[DeepL]
   llm[LLM]
   sentry[Sentry]
-  user --> proxy --> caddy
-  caddy -->|/ static files| spa
-  caddy -->|/api| api
+  user -->|HTTPS| proxy
+  proxy -->|requests through the tunnel,<br/>opened outbound by cloudflared| tunnel
+  tunnel --> edge
+  edge -->|/api/*| api
+  edge -->|everything else| web
+  web -->|static files| spa
   api --> db
   ls --> db
   ls --> r2
@@ -59,7 +64,9 @@ flowchart TB
 | API        | The single public entry point. Modules: `auth` (OIDC, sessions), `catalog` (ingredients, tree, search), `bar` (the user's bar), `recipes` (recipes, matching, filters), `recommend` (FR-3b: limits, Translator, Sommelier, response validation), `i18n` (translations by locale). OpenAPI is generated from decorators. | NestJS + Fastify adapter, Drizzle, Zod           |
 | SQLite     | A single database file in a Docker volume; WAL mode.                                                                                                                                                                                                                                                                    | better-sqlite3                                   |
 | Litestream | Continuous WAL replication to R2; snapshot before a migration.                                                                                                                                                                                                                                                          | Litestream                                       |
-| Caddy      | TLS (Cloudflare origin certificate), security headers (CSP, HSTS), SPA static files, proxying `/api` → API.                                                                                                                                                                                                             | Caddy                                            |
+| Tunnel     | `cloudflared` keeps outbound connections to Cloudflare open and forwards every request for `barbro.dev` to the edge; no inbound port on the server. Remotely managed: its single rule lives in the Cloudflare dashboard, its token in a Compose secret.                                                                 | cloudflared                                      |
+| Edge       | The only entry point behind the tunnel: routing (`/api/*` → API, everything else → Web), security headers (CSP, HSTS and others), compression, graceful shutdown. Configuration in `infra/edge/Caddyfile`.                                                                                                              | Caddy                                            |
+| Web        | SPA static files baked into an immutable image: SPA fallback to `index.html`, long-lived caching of hashed assets, `/revision`.                                                                                                                                                                                         | Caddy                                            |
 
 Adapters are the boundary for swapping providers without touching the modules:
 
@@ -220,7 +227,7 @@ Reference tables (`ingredient`, `recipe`, `recipe_ingredient`, `tag`, `substitut
 ```mermaid
 flowchart LR
   dev[SS: git push main] --> gha[GitHub Actions<br/>lint, test, audit, gitleaks, build]
-  gha --> ghcr[(GHCR images api, caddy+spa)]
+  gha --> ghcr[(GHCR images api, web)]
   vps[Hetzner CX23<br/>systemd timer: deploy the green HEAD of main<br/>by digest, health check, rollback] -->|pull| ghcr
   vps --> r2[(R2 backups)]
   vps -.-> sentry[Sentry]
@@ -230,14 +237,16 @@ flowchart LR
   
 ```
 
-- One compose file: `caddy`, `api`, `litestream`; a volume for SQLite; secrets in `.env` with mode 600.
+- One compose file, `infra/compose.yaml`, for CI smoke tests and the server: `edge`, `web`, `api`, `tunnel` (in the
+  `tunnel` profile, started only on the server), later `litestream`; a volume for SQLite. Secrets: the tunnel token as
+  a file-based Compose secret in `/etc/barbro/`; application keys in `.env` with mode 600 (from M1).
 - Deploy is pull-based (ADR-0007): every 5 minutes a systemd timer on the server takes the HEAD of `main` whose CI run
   succeeded, resolves the `sha-<commit>` tags of both images to digests, fetches `infra/` of the same commit, and runs `docker
   compose up -d` pinned by digest; a health check rolls back to the previous digests on failure; CI has no access to the
   server. Manual rollback or freeze — a pin file with the SHA.
 - Monorepo `barbro`: `apps/api`, `apps/web`, `packages/shared`, `infra/`; documentation — `barbro-docs`.
-- Hetzner firewall: 22 open to the internet with key-only authentication (accepted risk, see the threat model); 80/443
-  from Cloudflare ranges.
+- Hetzner firewall: only 22, open to the internet with key-only authentication (accepted risk, see the threat model).
+  No inbound HTTP: web traffic arrives through the Cloudflare Tunnel (ADR-0006, amendment of 2026-10-04).
 - Drizzle migrations run at `api` start-up after a Litestream snapshot.
 - Logs: pino → stdout → Docker `local` log driver (rotated by size, compressed); errors → Sentry.
 - Restore: `litestream restore` into an empty volume — the procedure is in `runbook.md`, verified in phase 5.
