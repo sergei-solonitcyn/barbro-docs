@@ -515,6 +515,12 @@ Done). Both repos are public.
 
 ## Learned in this product
 
+Level check, 2026-10-04, by SS: from the Caddy work onward (web image, smoke scripts, CI matrix, cloud-init, Compose,
+deploy agent, edge, tunnel) SS ran and verified solutions that Claude built and tested, and did not master them: he
+could not write those configs and scripts himself. For these items "practiced" and "measured" below mean "run and
+verified", not "can do independently". SS chose to keep the pace and consolidate at the end of the product, before the
+retrospective; new items are marked by the same rule.
+
 - The expert council as a format: options with trade-offs, choice by the architect, risks in the ADR — practiced on six
   decisions.
 - Measurements instead of assumptions: source coverage, MT quality, prices, and in CI — reproducing a config locally
@@ -602,6 +608,10 @@ Done). Both repos are public.
 - Renovate and digests: Docker Hub ages digests by `tag_last_pushed`; other registries and unversioned tags are held
   forever under `timestamp-required`; the validator must match the runner's version — practiced.
 - Learning format, additions:
+  - Pace vs mastery (SS's choice, 2026-10-04): SS writes the code of his learning targets himself — Node, NestJS, React,
+    the LLM features. Infrastructure glue (configs, CI, shell scripts) may come from Claude ready and tested to keep the
+    pace; such items are marked "run and verified" in this section and go to the consolidation at the end of the
+    product.
   - SS holds a Docker certification: skip Docker basics; teach the Node- and pnpm-specific parts.
   - A term introduced earlier must be named again in full when reused ("hooks" alone was unclear).
   - Dense prose specs of CI jobs did not work; on SS's request an annotated example of the jobs and the smoke script
@@ -680,3 +690,6 @@ Done). Both repos are public.
    the first `.env`.
 3. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; check the Renovate Dependency Dashboard
    (distroless, `Node.js` group, Caddy 2.11.6 in both places, `cloudflared`).
+4. At the end of the product, before the retrospective: consolidation of everything marked "run and verified" — SS
+   writes key pieces himself (the edge Caddyfile against `smoke-system.sh`, one smoke check, an annotated deploy agent
+   cycle, the request path from the domain to the services), then the "Learned" section is re-graded.
