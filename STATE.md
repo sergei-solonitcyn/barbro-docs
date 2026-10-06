@@ -1,17 +1,19 @@
 # STATE — BarBro
 
-Updated: 2026-10-04
+Updated: 2026-10-06
 
 ## Phase and milestone
 
-Phase 3 Implementation, milestone M0 "Skeleton" — about 99%. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on
-Fastify, `GET /api/health` with the build revision) and `apps/web` (Vite + React SPA), both built test-first; CI with
-eight required checks; self-hosted Renovate with automerge. CI builds and smoke-tests the `barbro-api` and `barbro-web`
-images, runs a system smoke test of the whole Compose stack through the edge, and publishes both images to GHCR from
-`main`. Production: `https://barbro.dev` — Cloudflare → Cloudflare Tunnel (`cloudflared`) → edge Caddy → `web` / `api`
-on a Hetzner CX23 with no inbound HTTP ports; a pull deploy agent (ADR-0007) deploys every green merge to `main` by
-digest. Remaining in M0: one merge deployed hands-off with all four services (the tunnel was started by hand once, see
-Done). Both repos are public.
+Phase 3 Implementation, milestone M1 "Sign-in" — increment 1 of 4 done (about 25%). M0 "Skeleton" is closed: the last
+merge deployed hands-off with all four services. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on Fastify; SQLite
+through better-sqlite3 + Drizzle, migrations applied at startup; `GET /api/health` reports the build revision and the
+database state; JSON logs through nestjs-pino) and `apps/web` (Vite + React SPA), both built test-first; CI with eight
+required checks and a schema/migration drift step; self-hosted Renovate with automerge. CI builds and smoke-tests the
+`barbro-api` and `barbro-web` images, runs a system smoke test of the whole Compose stack through the edge, and
+publishes both images to GHCR from `main`. Production: `https://barbro.dev` — Cloudflare → Cloudflare Tunnel
+(`cloudflared`) → edge Caddy → `web` / `api` on a Hetzner CX23 with no inbound HTTP ports; a pull deploy agent
+(ADR-0007) deploys every green merge to `main` by digest; the database lives in the named volume `barbro_api-data`. Both
+repos are public.
 
 ## Done
 
@@ -196,6 +198,33 @@ Done). Both repos are public.
   holds only the tunnel CNAME. HTTP → 301 and the Cloudflare certificate checked by SS.
 - `infra/README.md`: Cloudflare Tunnel setup, token storage and rotation, zone settings; agent update from the release
   directory; Compose commands for the running release.
+- M0 closed: the last `barbro` merge deployed hands-off with all four services (journal, containers and `/revision`
+  confirmed by SS).
+- M1 planned (2026-10-05, approved by SS): four increments, each a deployable PR — see Decisions.
+- M1 increment 1 — persistence and logging, merged via PRs:
+  - better-sqlite3 13.0.3, drizzle-orm 0.45.3, drizzle-kit 0.31. `DatabaseModule` with two providers: `SQLITE` (the raw
+    connection) and `DB_CLIENT` (Drizzle over it); pragmas `foreign_keys = ON`, `journal_mode = WAL`, `busy_timeout =
+    5000` run at startup; the connection is closed in `onApplicationShutdown`.
+  - Schema in `apps/api/src/db/schema.ts`: `user` (integer `AUTOINCREMENT` id, `email`, `created_at`), `user_identity`
+    (primary key `(provider, subject)`, cascade from `user`, index on `user_id`), `session` (`id_hash` primary key,
+    cascade from `user`, `created_at` and `expires_at` set by code, index on `user_id`). Migrations `0000`–`0002` in
+    `apps/api/drizzle`, applied at startup by the Drizzle migrator (folder resolved from the module file, so `src` and
+    `dist` agree).
+  - Tests: health 200 `{ revision, db: "ok" }` and 503 `{ revision, db: "error" }` on a closed connection (the agent's
+    `curl -f` treats 503 as unhealthy, no agent change); startup fails on a missing directory and on a file that is not
+    a database (proven red by removing the pragmas); migrations create the tables; cascade from `user` to
+    `user_identity` and `session` (proven red with `foreign_keys = OFF`); the connection is closed on shutdown.
+  - Production wiring: `DB_PATH` required, no default (a relative default put the database inside the container);
+    `/data` created in the image as `65532:65532` with mode `0700`, so Docker copies owner and mode into the empty named
+    volume; `api-data:/data` in `infra/compose.yaml`; `drizzle` added to `files` for `pnpm deploy`.
+  - CI step `Check migrations match schema`: `drizzle-kit generate`, then `git status --porcelain apps/api/drizzle` must
+    be empty — proven red with a column added without a migration. `src/db/schema.ts` excluded from coverage with a
+    comment (its callbacks run only for drizzle-kit — measured).
+  - Logging: nestjs-pino 5.3.1, pino 10.4, pino-http 11; `AppModule.forRoot({ logDestination })` so tests capture the
+    log; allowlist serializers — `req` = id, method, path without the query string; `res` = status code. A test proves
+    that a cookie, an `Authorization` header and a query-string secret never reach the log.
+  - Verified on production: `/api/health` reports the merge revision with `"db":"ok"`; `barbro_api-data` mounted at
+    `/data` as type `volume`; JSON logs; the Docker `local` log driver.
 
 ## Decisions
 
@@ -421,15 +450,53 @@ Done). Both repos are public.
 - Deploy agent: updates are installed from the release directory of the deployed commit (the version CI checked), not
   from a local checkout; a commit whose own deploy depends on its agent change needs a one-time manual step after the
   install.
+- M1 "Sign-in" (2026-10-05, approved by SS; one-role decisions, no ADR). Increments, each a deployable PR: (1) SQLite,
+  Drizzle, migrations, structured logging; (2) Google OIDC sign-in — start, callback, session, `GET /api/me`, logout,
+  SPA with TanStack Query, the first server secret and the rollback proof; (3) CSRF header guard on mutations and
+  account deletion; (4) the real client IP behind the tunnel, a per-IP limit on the sign-in start (10/h), the Cloudflare
+  rate limiting rule. Exit criterion: on `https://barbro.dev` a user signs in with Google, sees their email, signs out
+  and deletes the account; tests and pipeline green; the agent's rollback proven on the server; the per-IP limit proven
+  by an HTTP test and a two-IP system smoke; the Cloudflare rule active.
+- Moved out of M1: the FR-3b counters (10/day per user, 200/day global, 1 per 5 s) to the FR-3b milestone — outside-in
+  needs the endpoint; Litestream to M2 — accounts come back on the next sign-in, the bar is the first data a user cannot
+  recreate; Tailwind and shadcn/ui to M2. Tentative roadmap, refined at each planning: M2 catalog and bar (FR-2, the Bar
+  Assistant seed, Litestream), M3 "what can I make now" (FR-3a), M4 FR-3b (counters, LLM id validation, CSP, the model
+  by eval). `threat-model.md` §5 updated.
+- Data layer (easily reversible, no ADR):
+  - ADR-0006 stands: `node:sqlite` is Stability 1.2 (release candidate) in Node 26.7, and Drizzle's `node-sqlite` driver
+    exists only in `drizzle-orm@1.0.0-rc` (measured 2026-10-05). Revisit when both are stable; Drizzle isolates the
+    driver.
+  - Migrations run at API startup: one process on one server, no race; a failed migration fails the health check and the
+    agent rolls back. A snapshot before migrations comes with Litestream in M2.
+  - Integer primary keys for ids that never leave the server; an id exposed in a URL gets a separate UUIDv7 column.
+    `AUTOINCREMENT` on `user`, so a hard-deleted id is never reused.
+  - Session token: 256 random bits, only its SHA-256 stored (no slow hash needed for random tokens); timestamps set by
+    code so tests control the clock.
+  - The `better-sqlite3` build script is denied in `pnpm-workspace.yaml`: the npm tarball ships prebuilt binaries
+    (`prebuilds/`, glibc and musl, x64 and arm64) loaded by `lib/binding.js`; the only build step is pnpm's implicit
+    `node-gyp rebuild` for packages with `binding.gyp`, which needs Python and a compiler.
+  - Health `db` means "the connection answers `select 1`", not data integrity; a database that cannot be opened fails
+    the startup instead.
+- Logs (easily reversible, no ADR): allowlist serializers instead of redaction — no headers, no query strings, no client
+  IP, no bodies — so logs carry no personal data and size-based rotation by the Docker `local` driver (5 × 20 MB per
+  container) is enough; the `threat-model.md` row on log leaks rewritten accordingly (it promised a 14-day rotation).
+- Recommended for increments 2–4, decided at the step: `openid-client` for the protocol (OpenID-certified; sessions and
+  tables stay ours per ADR-0005); the Google client secret as a file-based Compose secret like the tunnel token; the
+  rollback proof with that secret (file missing → Compose refuses to start, a path the agent has not seen yet; empty
+  file → config validation fails → health red → rollback); no Playwright E2E through Google (automated Google sign-in is
+  blocked) — the callback is covered with a fake `IdentityProvider`, the adapter against a local fake IdP; the rate
+  limiter (`@fastify/rate-limit` vs `@nestjs/throttler`) chosen in increment 4.
 
 ## Stack and tools
 
-- **Runtime and tooling:** Node 26 LTS (`fnm` + `.nvmrc` locally), TypeScript 6, pnpm 12.6 (Homebrew; version pinned via
-  `packageManager`).
+- **Runtime and tooling:** Node 26 LTS (`fnm` + `.nvmrc` locally), TypeScript 6, pnpm 12.8 (standalone install in
+  `~/Library/pnpm`, kept at the `packageManager` version with `pnpm self-update`).
 - **API:** NestJS 12 (ESM) on Fastify 5, Zod 4 through Nest's built-in Standard Schema validation, OpenAPI.
 - **Web client:** Vite 8, React 19, TanStack Query, Tailwind, shadcn/ui, PWA; tests with Vitest, jsdom and Testing
   Library. Served by Caddy 2.11 (`barbro-web` image).
-- **Data:** SQLite (better-sqlite3 13 on Node-API), Drizzle, Litestream.
+- **Data:** SQLite (better-sqlite3 13 on Node-API, prebuilt binaries from the npm tarball), Drizzle ORM 0.45 +
+  drizzle-kit (migrations in `apps/api/drizzle`), Litestream (M2).
+- **Logging:** pino 10 through nestjs-pino 5 (pino-http), JSON to stdout, Docker `local` log driver.
 - **Infrastructure:** Docker (multi-stage, distroless and Alpine runtimes, Buildx), Docker Compose (profiles, file-based
   secrets), Caddy (edge and static); Cloudflare Registrar, DNS (DNSSEC), proxy, Tunnel (`cloudflared`), R2; GitHub
   Actions, GHCR; Sentry, UptimeRobot. Locally Docker Desktop on macOS (arm64)
@@ -447,9 +514,9 @@ Done). Both repos are public.
 - Caddy 2.11.6 (on Docker Hub since 2026-10-02, cooldown over): confirm that one Renovate PR updates both
   `apps/web/Dockerfile` and the `edge` image in `infra/compose.yaml`; check the Dependency Dashboard for
   `cloudflare/cloudflared` too.
-- Real client IP behind the tunnel — implement and test in M1 with the rate limits: the edge trusts `CF-Connecting-IP`
-  only from the `tunnel` container (`trusted_proxies`), Fastify trusts only the edge; two clients with different IPs get
-  different buckets.
+- Real client IP behind the tunnel — M1 increment 4, with the rate limits: the edge trusts `CF-Connecting-IP` only from
+  the `tunnel` container (`trusted_proxies`), Fastify trusts only the edge; two clients with different IPs get different
+  buckets. Keep the IP out of the logs (it is personal data).
 - The deploy agent's health check does not see the tunnel. Until UptimeRobot (phase 5): consider `cloudflared --metrics`
   with its `/ready` endpoint as a cheap local check.
 - Edge 502 responses (upstream down) carry no security headers and expose `Server: Caddy`: Caddy's error path skips the
@@ -460,14 +527,12 @@ Done). Both repos are public.
   equivalent is `U`), so `CONTAINER_CLI=podman` in the smoke scripts is broken. Drop the podman claim from the scripts
   or keep a local override; podman also refuses an `amd64`-only index on arm64 without `--platform`.
 - `www.barbro.dev` is not configured — decide on a redirect before phase 4.
-- Cloudflare rate limiting rule on `/api/*` (threat model) — set up in M1 together with the API limits.
+- Cloudflare rate limiting rule on `/api/*` (threat model) — M1 increment 4; check what the Free plan allows at setup
+  time.
 - Tunnel token rotation (recreate the tunnel) is documented but not rehearsed.
-- Log retention: `threat-model.md` promises 14-day log rotation, the `local` driver rotates by size (about 100 MB per
-  container), so with low traffic logs can live longer — decide in M1 together with pino logging (rewrite the control
-  or add a time limit).
-- Rollback after a failed health check is verified only against mocks — a revision that passes CI and fails on the
-  server is unlikely now that CI tests the same `compose.yaml`. Prove it on the server in M1, when a server-side `.env`
-  appears (a missing secret gives a natural red case).
+- Rollback after a failed health check is verified only against mocks. Prove it on the server in M1 increment 2 with the
+  Google client secret: file missing (Compose refuses to start — the agent has not met this path yet) and empty file
+  (config validation fails, health red, rollback).
 - Smoke via Compose: confirm the red check was run (`web` tmpfs without `uid`/`gid` must fail `image (web)`).
 - Hetzner API token (Read & Write) on SS's Mac in `~/.config/hcloud/cli.toml` in plain text — keep or revoke between
   server rebuilds.
@@ -503,7 +568,6 @@ Done). Both repos are public.
   from our own repo, so the worst case is a crashed lint run; no exposure in the deployed product (`barbro`'s lockfile
   has no `braces`). Do not run `npm audit fix --force`: its "fix" downgrades `markdownlint-cli2` to 0.0.4. Take the
   `braces` patch when it ships.
-- OIDC theory: proposed to move it to the start of the auth milestone (no auth in M0); confirm.
 - LLM model — by the eval set (~20 EN cases, with injection); candidates GPT-6 Luna, Gemini 3.5 Flash-Lite, Claude Haiku
   4.5.
 - Azure Translator F0 — test on the same phrases before the i18n milestone (needs a card).
@@ -512,6 +576,13 @@ Done). Both repos are public.
 - Protecting cocktail names in DeepL (`tag_handling`) — verify at implementation.
 - Google Gemini prices — verify on the official page before the eval.
 - Organizational: Claude Code in a clone of the repo for reviews — optional.
+- pnpm hung silently (no output even with `--loglevel=debug`) inside the repo when `packageManager` (12.8.2) differed
+  from the installed pnpm (12.6.0), i.e. while switching versions; worked around with `pnpm self-update 12.8.2`.
+  Investigate if it recurs on the next Renovate pnpm bump.
+- `node:sqlite` instead of better-sqlite3 — revisit when `node:sqlite` and Drizzle's `node-sqlite` driver are stable (no
+  native module in the image).
+- Local dev on podman (rootless) hides permission defects that Docker shows (a root-owned bind mount, a tmpfs): a green
+  local run under podman is not evidence for the server; CI on Docker is.
 
 ## Learned in this product
 
@@ -675,21 +746,54 @@ retrospective; new items are marked by the same rule.
 - Deploying a change to the deployer: the commit that changes the agent is deployed by the previous agent; install
   updates from the release directory, not from a local checkout — learned from the tunnel deploy.
 - Claude's sandbox runs on gVisor: capability and kernel behavior measured there is not evidence for Linux.
-- Not yet: the event loop and synchronous better-sqlite3, OIDC flow, TanStack Query.
+- Node event loop: one JavaScript thread; I/O handed to the thread pool or the kernel; synchronous better-sqlite3 blocks
+  the loop, but an in-process SQLite query takes microseconds — every query must be fast by construction, indexes come
+  with the query — understood.
+- SQLite: WAL (stored in the file), `foreign_keys` per connection, `busy_timeout`, `:memory:` for tests. better-sqlite3
+  opens lazily — the constructor fails only on a missing directory, a file that is not a database fails on the first
+  statement, so a statement must run at startup; a file overwritten under an open connection still answers `select 1`
+  and schema queries from cache; better-sqlite3 compiles SQLite with `SQLITE_DEFAULT_FOREIGN_KEYS=1`, so a cascade test
+  is proven red with `foreign_keys = OFF`, not by removing the pragma — measured on 13.0.3.
+- Drizzle: schema in TypeScript, `drizzle-kit generate` writes SQL plus a `meta/` snapshot, the migrator records applied
+  files in `__drizzle_migrations`; schema callbacks (`references`, extra config) run only in `getTableConfig` for
+  drizzle-kit, never at runtime — measured; drift check with `git status --porcelain` (a new migration is an untracked
+  file, invisible to `git diff`) — practiced.
+- Data modelling: integer vs UUID by whether the id leaves the server, UUIDv7 vs v4 for index locality; `AUTOINCREMENT`
+  against id reuse after a hard delete; a composite natural key `(provider, subject)`; SQLite does not index foreign-key
+  columns of the child table; store the hash of a 256-bit token, plain SHA-256 suffices — understood.
+- NestJS: the type next to `@Inject` is an unchecked claim — a Drizzle instance typed as a better-sqlite3 `Database`
+  failed only at runtime, and a bare `catch` turned the `TypeError` into a 503; `HttpException` with an object body;
+  `OnApplicationShutdown` with `enableShutdownHooks`; a dynamic root module `AppModule.forRoot(options)` for test parity
+  — practiced.
+- Tests: a fresh app per test when tests break it (`beforeEach`, not a shared `beforeAll`); `toContain` on an array
+  compares whole elements; a log test must also assert the expected line exists, or it passes on empty output —
+  practiced.
+- Structured logging: JSON lines, `reqId` correlation, allowlist serializers vs redaction, `bufferLogs`, a destination
+  object with `write` to capture logs in tests — practiced.
+- Docker named volumes: an empty named volume takes the content, owner and mode of the image directory at the mount
+  point, so `/data` is created in the image (distroless: in the build stage, then `COPY --chown --chmod`); Compose
+  treats a source with `./`, `/` or `~` as a host bind mount, created root-owned — measured in CI with a temporary
+  diagnostic step (image layout, plain `docker run`, `compose config` and `Mounts`).
+- pnpm: pnpm itself runs `node-gyp rebuild` for a package with `binding.gyp` and no install script — read what the
+  tarball ships before approving a build; `pnpm deploy` copies only `files`; a lockfile broken by a git merge is taken
+  from `main` and re-resolved with `pnpm install`, never hand-merged; `packageManager` makes pnpm switch its own version
+  — practiced.
+- Claims about a package's install script or build flags are checked in the published tarball: Claude got both wrong
+  from memory this milestone (`prebuild-install` in better-sqlite3 13, SQLite's foreign-key default) — learned.
+- Not yet: OIDC flow, TanStack Query; React props, state and effects.
 
 ## Next step
 
-1. SS: merge the `barbro-docs` PR (amendment, threat model, architecture, `adr/README.md`, `cspell.json`, this
-   `STATE.md`) and the `barbro` PR with `infra/README.md`. The `barbro` merge is the last M0 check: it must deploy
-   hands-off with all four services — `journalctl -u barbro-deploy` shows the new revision deployed, `docker compose ps`
-   (with `COMPOSE_PROFILES=tunnel`) shows `tunnel` running, and `https://barbro.dev/revision` reports the new commit.
-   M0 is closed after that.
-2. New chat "Phase 3, M1: planning" on Fable 5.1, High: define the M1 vertical slice (by `threat-model.md` §5: Google
-   OIDC sign-in, sessions, rate limits and counters, the real client IP behind the tunnel, server-side `.env`, pino
-   logging, the Cloudflare rate limiting rule); OIDC theory at its start; prove the agent's rollback on the server with
-   the first `.env`.
-3. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; check the Renovate Dependency Dashboard
+1. SS: merge the `barbro-docs` PR with this `STATE.md` and `threat-model.md` (§5 milestone plan, the log leak row).
+2. New chat "Phase 3, M1, increment 2: Google OIDC sign-in" (Fable 5.1 or Opus 5.5, High), one small step per message:
+   short OIDC theory first (authorization code flow, `state`, `nonce`, PKCE, the `id_token` and its signature check); SS
+   creates the Google OAuth client (Web application, redirect URIs for `https://barbro.dev` and local dev); then
+   test-first — the `IdentityProvider` adapter, start and callback, the session cookie, `GET /api/me`, logout, the SPA
+   sign-in with TanStack Query; the rollback proof with the first secret.
+3. Then increment 3 (CSRF header guard, account deletion) and increment 4 (real client IP, per-IP limit on the sign-in
+   start, the Cloudflare rule); M1 exit check.
+4. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; check the Renovate Dependency Dashboard
    (distroless, `Node.js` group, Caddy 2.11.6 in both places, `cloudflared`).
-4. At the end of the product, before the retrospective: consolidation of everything marked "run and verified" — SS
+5. At the end of the product, before the retrospective: consolidation of everything marked "run and verified" — SS
    writes key pieces himself (the edge Caddyfile against `smoke-system.sh`, one smoke check, an annotated deploy agent
    cycle, the request path from the domain to the services), then the "Learned" section is re-graded.

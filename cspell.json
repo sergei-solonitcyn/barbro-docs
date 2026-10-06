@@ -8,6 +8,7 @@
     "@cspell/dict-uk-ua/cspell-ext.json"
   ],
   "words": [
+    "Autoincrement",
     "Barbro", "BarbroDocs", "Buildx",
     "Caddyfiles","Citrusy", "crowdsourced", "crun",
     "deepl", "Difford's", "distroless", "DMARC", "DNSSEC", "Dockerfiles",
@@ -20,7 +21,7 @@
     "minimumReleaseAgeBehaviour",
     "Netcup", "nodelib", "nonroot", "nosniff",
     "oneshot",
-    "Passwordless", "pipefail", "PKCE",
+    "Passwordless", "pipefail", "PKCE", "prebuild", "prebuilds",
     "QUIC",
     "rasmusab", "RDAP", "renovatebot", "repoints",
     "Scaleway", "setcap", "setpriv", "shellcheck", "SIGPIPE", "solonitcyn", "Supabase",
