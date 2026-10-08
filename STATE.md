@@ -1,13 +1,15 @@
 # STATE — BarBro
 
-Updated: 2026-10-06
+Updated: 2026-10-09
 
 ## Phase and milestone
 
-Phase 3 Implementation, milestone M1 "Sign-in" — increment 1 of 4 done (about 25%). M0 "Skeleton" is closed: the last
-merge deployed hands-off with all four services. The `barbro` monorepo has `apps/api` (NestJS 12 ESM on Fastify; SQLite
-through better-sqlite3 + Drizzle, migrations applied at startup; `GET /api/health` reports the build revision and the
-database state; JSON logs through nestjs-pino) and `apps/web` (Vite + React SPA), both built test-first; CI with eight
+Phase 3 Implementation, milestone M1 "Sign-in" — increments 1 and 2 of 4 done, plus the CSRF guard planned for
+increment 3 (about 55%). On `https://barbro.dev` a user signs in with Google, sees their email and signs out. M0
+"Skeleton" is closed: the last merge deployed hands-off with all four services. The `barbro` monorepo has `apps/api`
+(NestJS 12 ESM on Fastify; SQLite through better-sqlite3 + Drizzle, migrations applied at startup; `GET /api/health`
+reports the build revision and the database state; JSON logs through nestjs-pino; Google OIDC sign-in through
+`openid-client` with server-side sessions) and `apps/web` (Vite + React SPA with TanStack Query), both built test-first; CI with eight
 required checks and a schema/migration drift step; self-hosted Renovate with automerge. CI builds and smoke-tests the
 `barbro-api` and `barbro-web` images, runs a system smoke test of the whole Compose stack through the edge, and
 publishes both images to GHCR from `main`. Production: `https://barbro.dev` — Cloudflare → Cloudflare Tunnel
@@ -225,6 +227,53 @@ repos are public.
     that a cookie, an `Authorization` header and a query-string secret never reach the log.
   - Verified on production: `/api/health` reports the merge revision with `"db":"ok"`; `barbro_api-data` mounted at
     `/data` as type `volume`; JSON logs; the Docker `local` log driver.
+- M1 increment 2 — Google OIDC sign-in, merged via PRs and deployed:
+  - Google Cloud project `barbro`, Google Auth Platform: audience External, publishing status Testing, SS as the only
+    test user; scopes `openid` and the Google email scope declared (both non-sensitive, no verification needed —
+    closes the ADR-0005 check); no logo, homepage or authorized domains. Two Web application clients: `barbro-prod`
+    (redirect URI `https://barbro.dev/api/auth/google/callback`) and `barbro-dev`
+    (`http://localhost:5173/api/auth/google/callback`), no JavaScript origins; both secrets in SS's password manager.
+  - `apps/api/src/auth/`: the `IdentityProvider` port (abstract class) and `GoogleIdentityProvider` on `openid-client`
+    6.8.8; `AuthController` — `GET /api/auth/google/start`, `GET /api/auth/google/callback`, `POST /api/auth/logout`;
+    `MeController` — `GET /api/me` behind `SessionGuard` with a `@CurrentUser()` param decorator; `AuthService` —
+    find-or-create by `(provider, subject)` in one transaction, sessions, sliding renewal, sign-out. `@fastify/cookie`
+    11 registered in `configureApp` (now async); `fastify` added as a direct dependency for its types.
+  - `apps/api/src/security/csrf-header.guard.ts`: a global `APP_GUARD` (pulled forward from increment 3, because logout
+    is the first mutation).
+  - Tests: HTTP tests with a fake `IdentityProvider` through `createTestApp(source, options, identityProvider)` — start
+    (redirect, transaction cookie attributes), callback happy path, four failure paths (no cookie, malformed cookie,
+    provider error, `email_verified=false` creates no user), `/api/me` (200, 401 without cookie, unknown token,
+    expired), user reuse, sliding renewal (30 days, once a day, 90-day cap, with `vi.useFakeTimers({ toFake: ["Date"]
+    })`), logout (server-side delete, cookie cleared, idempotent, 403 without `X-Requested-With`). Adapter tests against
+    `src/testing/fake-oidc-provider.ts` — a local OpenID Provider (discovery, JWKS, token endpoint enforcing client
+    secret, `redirect_uri` and PKCE, signing with `jose`): authorization URL, valid callback, and rejection on wrong
+    `state`, `nonce`, `aud`, `iss`, unknown signing key, missing email, wrong PKCE verifier, wrong client secret; retry
+    after a failed discovery; a plain-HTTP issuer refused without the test-only option. Coverage 100%; `src/testing/**`
+    excluded from coverage (test support, not shipped — as in `tsconfig.build.json`).
+  - Config: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET_FILE` (read and trimmed at parse; "cannot be read" / "is empty"
+    fail the startup), `PUBLIC_ORIGIN` (an origin only; `redirect_uri` is built from it); `createTestApp` supplies test
+    defaults.
+  - Bug from increment 1 fixed: `DatabaseModule.forRoot()` was imported by both `AppModule` and `HealthModule`, which
+    gave two SQLite connections (with `:memory:` — two databases). Nest 12 identifies dynamic modules by object
+    reference with random ids unless `moduleIdGeneratorAlgorithm: 'deep-hash'` — measured in the `@nestjs/core` 12.1.2
+    source. `DatabaseModule` is now `global: true` and imported once in `AppModule`.
+  - SPA: `apps/web/src/api.ts` (`fetchMe` → `null` on 401, `logout` with `X-Requested-With: fetch`), `App.tsx` (sign-in
+    link as a full-page navigation, email and sign-out, notices for `?signin=failed` and load/sign-out errors),
+    `QueryClientProvider` in `main.tsx`; 7 component tests with a stubbed `fetch`, coverage 100%.
+  - Biome: `noStaticOnlyClass` off for `apps/api/src/**/*.module.ts` (Nest dynamic modules are classes with a static
+    `forRoot`).
+  - Production wiring: `infra/compose.yaml` — `GOOGLE_CLIENT_ID` (public) and `PUBLIC_ORIGIN=https://barbro.dev` in
+    `environment`, the Compose secret `google-client-secret` from `${GOOGLE_CLIENT_SECRET_PATH:-/etc/barbro/google-client-secret}`
+    mounted as `/run/secrets/google-client-secret`; `smoke-api-image.sh` and `smoke-system.sh` create a dummy secret
+    file (`0444`, the container user is 65532) and point the variable at it; `smoke-system.sh` also checks that
+    `GET /api/me` without a session returns 401 through the edge. `infra/README.md`: how to create the secret file.
+  - Rollback proven on the server, both paths: the secret file missing — Compose failed to create `api` ("bind source
+    path does not exist"), the revision was marked bad and the agent rolled back to `1f1e8ba`; the file empty — the
+    health check failed and the agent rolled back; the cause (`is empty` at `GOOGLE_CLIENT_SECRET_FILE`) confirmed by
+    running the failed image by hand with the same file. After both, `/api/health` and `/revision` reported `1f1e8ba`.
+  - First real deploy failed sign-in with `redirect_uri_mismatch`: `compose.yaml` had the client ID of `barbro-dev` and
+    the server file its secret. Fixed to `barbro-prod`; sign-in, email and sign-out verified by SS on
+    `https://barbro.dev`, and locally (Safari accepts `Secure` cookies on `http://localhost`).
 
 ## Decisions
 
@@ -485,13 +534,42 @@ repos are public.
   rollback proof with that secret (file missing → Compose refuses to start, a path the agent has not seen yet; empty
   file → config validation fails → health red → rollback); no Playwright E2E through Google (automated Google sign-in is
   blocked) — the callback is covered with a fake `IdentityProvider`, the adapter against a local fake IdP; the rate
-  limiter (`@fastify/rate-limit` vs `@nestjs/throttler`) chosen in increment 4.
+  limiter (`@fastify/rate-limit` vs `@nestjs/throttler`) chosen in increment 4. The first three are done (increment 2).
+- Sign-in (M1 increment 2; within ADR-0005, one-role decisions, no ADR):
+  - Port: `IdentityProvider.startAuthorization()` returns the URL and a transaction (`state`, `nonce`, `codeVerifier`,
+    generated by the adapter, so the fake is deterministic); `completeAuthorization(params, transaction)` takes the
+    callback query, and the adapter builds the full URL from its configured `redirect_uri` — `openid-client` sends that
+    URL without its query as `redirect_uri` (measured in 6.8.8). The adapter returns `emailVerified`; the policy
+    "verified email only" stays in our controller, testable at the HTTP level.
+  - Signature check: `openid-client` by default does not verify the `id_token` signature of a token-endpoint response
+    (OIDC Core 3.1.3.7 lets TLS validate the issuer) — measured: the foreign-key test passed. We enable
+    `enableNonRepudiationChecks`, so the signature is checked against Google's JWKS too.
+  - Discovery is lazy and retried after a failure, so the API starts while Google is unreachable.
+  - Transaction cookie `barbro_oidc`: JSON, unsigned (each value is random and compared by the library; forging one's
+    own cookie only breaks one's own sign-in; writing a victim's cookie needs a subdomain or plain HTTP, and we have
+    neither); `HttpOnly`, `Secure`, `SameSite=Lax` (`Strict` would not be sent on the cross-site return from Google),
+    `Path=/api/auth/google`, `Max-Age=600`; validated with Zod; cleared on success and on every failure.
+  - Any callback failure redirects to `/?signin=failed` with no session; the reason is not logged yet.
+  - Session cookie `barbro_session`: `HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` = remaining lifetime.
+    Sliding 30 days, capped at 90 days from sign-in; the database write and the re-issued cookie at most once a day.
+    Every sign-in creates a new session (id rotation). Logout deletes the session row, clears the cookie, returns 204
+    and succeeds without a session.
+  - Users: find-or-create by `(provider, subject)`; `sub` is the key, the email is stored for display.
+  - Two OAuth clients (prod and dev), so the prod secret exists only on the server and in the password manager.
+  - Secrets are configured as file paths and read at config parse, never as environment values; errors name the
+    variable, never the content.
+  - CSRF: every request other than `GET`/`HEAD`/`OPTIONS` must carry `X-Requested-With` (any value; the SPA sends
+    `fetch`), enforced by a global `APP_GUARD`; together with `SameSite=Lax`. Increment 3 is now account deletion only.
+- Working mode (2026-10-08, SS): for NestJS application code Claude gives complete files and explains only the new
+  NestJS concepts; messages kept short, one step each.
 
 ## Stack and tools
 
 - **Runtime and tooling:** Node 26 LTS (`fnm` + `.nvmrc` locally), TypeScript 6, pnpm 12.8 (standalone install in
   `~/Library/pnpm`, kept at the `packageManager` version with `pnpm self-update`).
 - **API:** NestJS 12 (ESM) on Fastify 5, Zod 4 through Nest's built-in Standard Schema validation, OpenAPI.
+- **Auth:** `openid-client` 6.8.8, `@fastify/cookie` 11; `jose` as a dev dependency for the
+  local fake OpenID Provider; Google Auth Platform.
 - **Web client:** Vite 8, React 19, TanStack Query, Tailwind, shadcn/ui, PWA; tests with Vitest, jsdom and Testing
   Library. Served by Caddy 2.11 (`barbro-web` image).
 - **Data:** SQLite (better-sqlite3 13 on Node-API, prebuilt binaries from the npm tarball), Drizzle ORM 0.45 +
@@ -530,9 +608,21 @@ repos are public.
 - Cloudflare rate limiting rule on `/api/*` (threat model) — M1 increment 4; check what the Free plan allows at setup
   time.
 - Tunnel token rotation (recreate the tunnel) is documented but not rehearsed.
-- Rollback after a failed health check is verified only against mocks. Prove it on the server in M1 increment 2 with the
-  Google client secret: file missing (Compose refuses to start — the agent has not met this path yet) and empty file
-  (config validation fails, health red, rollback).
+- Deploy agent: on a failed health check it does not print the container logs, so the cause is visible only by hand
+  (the `is empty` case needed a manual `docker run`). Add `docker compose logs --tail` of `api` and `web` before the
+  rollback; reinstall the agent from the release afterwards.
+- Google Auth Platform is in Testing: only listed test users can sign in. Switch to In production before the M1 exit
+  check (the criterion says "a user signs in"); with only non-sensitive scopes no verification is expected — confirm
+  in the console at that time.
+- The email is stored at the first sign-in and never updated; decide whether to refresh it on every sign-in.
+- A sign-in creates a new session but does not delete the session the browser may already hold; old and expired rows
+  stay in `session` — add a cleanup (on sign-in, or periodic) when convenient.
+- Sign-in failures are not logged. Add a log line with a non-personal reason (the error class from `openid-client`,
+  no claims, no query) when the adapter's error types are known.
+- Local dev of the API needs four environment variables typed by hand (`GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET_FILE` with the secret in `~/.config/barbro/google-client-secret-dev`, `PUBLIC_ORIGIN`, an
+  absolute `DB_PATH`, from the repo root with `pnpm --filter @barbro/api start:dev`) — consider an env file outside git.
+- `/var/lib/barbro/bad` still lists `cf61f92` (the missing-secret proof); harmless, never the HEAD again.
 - Smoke via Compose: confirm the red check was run (`web` tmpfs without `uid`/`gid` must fail `image (web)`).
 - Hetzner API token (Read & Write) on SS's Mac in `~/.config/hcloud/cli.toml` in plain text — keep or revoke between
   server rebuilds.
@@ -683,6 +773,10 @@ retrospective; new items are marked by the same rule.
     the LLM features. Infrastructure glue (configs, CI, shell scripts) may come from Claude ready and tested to keep the
     pace; such items are marked "run and verified" in this section and go to the consolidation at the end of the
     product.
+  - Changed 2026-10-08 (SS, tired of writing it by hand): Claude also gives complete NestJS application code (and gave the
+    React SPA code of increment 2) and explains only the new concepts; tests are still placed first and shown red. NestJS items from then on are "run and
+    verified" too.
+  - Messages about ten times shorter than the early ones in increment 2: long explanations lose SS (2026-10-08).
   - SS holds a Docker certification: skip Docker basics; teach the Node- and pnpm-specific parts.
   - A term introduced earlier must be named again in full when reused ("hooks" alone was unclear).
   - Dense prose specs of CI jobs did not work; on SS's request an annotated example of the jobs and the smoke script
@@ -780,20 +874,43 @@ retrospective; new items are marked by the same rule.
   — practiced.
 - Claims about a package's install script or build flags are checked in the published tarball: Claude got both wrong
   from memory this milestone (`prebuild-install` in better-sqlite3 13, SQLite's foreign-key default) — learned.
-- Not yet: OIDC flow, TanStack Query; React props, state and effects.
+- OIDC authorization code flow: roles, `state` (login CSRF), PKCE (code interception and injection), `nonce`, the
+  `id_token` claims, `sub` as the stable key, why the transaction cookie must be `SameSite=Lax` — partly understood (SS:
+  "more or less"); the default `openid-client` behavior on the signature — measured.
+- Google Auth Platform: External vs Internal, Testing vs In production, declared scopes, Web clients and exact
+  redirect URI matching; the secret shown once; `redirect_uri_mismatch` diagnosed from the `Location` of
+  `/api/auth/google/start` — practiced (SS set it up himself).
+- NestJS, new this increment — run and verified (code by Claude since 2026-10-08): `overrideProvider` in tests; guards
+  (`CanActivate`, `@UseGuards`, a global `APP_GUARD`, writing a cookie from a guard through `getResponse()`); a custom
+  param decorator; `useFactory` with `inject`; `@Res({ passthrough: true })` with `@Redirect()`; every `forRoot()` call
+  is a separate module instance in Nest 12 — measured in the source.
+- Vitest: `vi.fn` spies with `toHaveBeenCalledWith`, `mockResolvedValueOnce` / `mockRejectedValueOnce`, fake timers
+  for `Date` only — run and verified.
+- TanStack Query: `useQuery`, `useMutation`, `setQueryData` after a mutation, `QueryClientProvider`; test with a fresh
+  client and `retry: false` — run and verified. React props, own state and effects — not yet.
+- Compose secrets: a missing secret file of a started service fails container creation (bind mount), while a profile
+  that is not started is ignored; the secret file keeps host ownership and mode, so a non-root container needs group
+  read — measured on the server.
+- Biome 2.5.14: when a file matches several `overrides`, a later one resets `unsafeParameterDecoratorsEnabled` set by an
+  earlier one — reproduced; repeat the parser option in every override that matches decorated files.
+- pnpm: `pnpm --filter pkg <name>` with no such script falls back to exec (`ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`); scripts
+  run in the package directory, so relative paths in env vars resolve there — practiced.
+- Claude got four claims wrong this increment, each caught by a test or by SS: `openid-client` "verifies the signature
+  anyway", the API script name `dev`, which smoke scripts use `compose.yaml`, and "the agent never prunes images" (it
+  prunes unused images older than 7 days) — learned: read the source or run it before stating.
 
 ## Next step
 
-1. SS: merge the `barbro-docs` PR with this `STATE.md` and `threat-model.md` (§5 milestone plan, the log leak row).
-2. New chat "Phase 3, M1, increment 2: Google OIDC sign-in" (Fable 5.1 or Opus 5.5, High), one small step per message:
-   short OIDC theory first (authorization code flow, `state`, `nonce`, PKCE, the `id_token` and its signature check); SS
-   creates the Google OAuth client (Web application, redirect URIs for `https://barbro.dev` and local dev); then
-   test-first — the `IdentityProvider` adapter, start and callback, the session cookie, `GET /api/me`, logout, the SPA
-   sign-in with TanStack Query; the rollback proof with the first secret.
-3. Then increment 3 (CSRF header guard, account deletion) and increment 4 (real client IP, per-IP limit on the sign-in
-   start, the Cloudflare rule); M1 exit check.
+1. SS: merge the `barbro-docs` PR with this `STATE.md`.
+2. New chat "Phase 3, M1, increment 3: account deletion" (Opus 5.5 or Fable 5.1, High), short messages, one step each,
+   complete code from Claude: test-first `DELETE /api/me` (cascade to `user_identity` and `session`, cookie cleared,
+   CSRF header required), the SPA button with a confirmation; then the agent change from Open questions (container logs
+   on a failed health check), installed from the release.
+3. Increment 4 (real client IP, per-IP limit on the sign-in start, the Cloudflare rule); switch Google Auth Platform to
+   In production; M1 exit check.
 4. In parallel, SS: Azure F0 test, the LLM eval set; confirm Dependabot; check the Renovate Dependency Dashboard
    (distroless, `Node.js` group, Caddy 2.11.6 in both places, `cloudflared`).
 5. At the end of the product, before the retrospective: consolidation of everything marked "run and verified" — SS
    writes key pieces himself (the edge Caddyfile against `smoke-system.sh`, one smoke check, an annotated deploy agent
-   cycle, the request path from the domain to the services), then the "Learned" section is re-graded.
+   cycle, the request path from the domain to the services, the sign-in flow end to end), then the "Learned" section is
+   re-graded.
