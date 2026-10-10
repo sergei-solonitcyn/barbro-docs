@@ -1,7 +1,7 @@
 {
   "devDependencies": {
-    "@cspell/dict-uk-ua": "^4.0.6",
-    "cspell": "^10.3.4",
+    "@cspell/dict-uk-ua": "^4.0.7",
+    "cspell": "^10.3.6",
     "markdownlint-cli2": "^0.23.3"
   },
   "engines": {
